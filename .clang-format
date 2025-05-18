@@ -1,0 +1,8 @@
+Language:                 Cpp
+BasedOnStyle:             Google                  
+IndentWidth:              4                       
+TabWidth:                 4                       
+SortIncludes:             true                    
+ReflowComments:           false
+NamespaceIndentation:     All
+AccessModifierOffset:     -2

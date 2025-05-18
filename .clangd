@@ -1,0 +1,43 @@
+---
+Index:
+  Background: Build
+
+CompileFlags:
+  Add: [-xc++, -Wall, -std=c++20, -Wno-parentheses]
+  Compiler: clang++
+
+Diagnostics:
+  ClangTidy:
+    Add: ["*"]
+    Remove: [
+        abseil*,
+        fuchsia*,
+        llvmlib*,
+        zircon*,
+        altera*,
+        google-readability-todo, 
+        modernize-use-trailing-return-type, # 不要每个都加上尾返回值类型
+        readability-identifier-length, # 不检查变量名长度
+        cppcoreguidelines-avoid-magic-numbers, # 不检查魔法数字
+        readability-magic-numbers, #同上
+        readability-redundant-access-specifiers, # 关闭冗余访问说明符警告
+        cppcoreguidelines-pro-type-reinterpret-cast, # 关闭 reinterpret_cast 警告
+        cppcoreguidelines-pro-bounds-pointer-arithmetic, # 关闭指针算术警告
+        cppcoreguidelines-non-private-member-variables-in-classes, # 关闭类中非私有成员变量警告
+        misc-non-private-member-variables-in-classes,
+        performance-avoid-endl, # 关闭使用 std::endl 的警告
+        hicpp-avoid-c-arrays,   # 关闭使用C数组警告
+        cppcoreguidelines-pro-bounds-array-to-pointer-decay, # 关闭数组到指针衰减警告
+        bugprone-easily-swappable-parameters, # 关闭易交换参数警告
+        readability-use-anyofallof, # 关闭使用 any_of 和 all_of 警告
+        cppcoreguidelines-avoid-c-arrays,
+        cppcoreguidelines-owning-memory,
+        hicpp-no-array-decay,
+        misc-no-recursion, # 关闭递归警告
+        readability-implicit-bool-conversion,
+        google-readability-braces-around-statements,
+        readability-braces-around-statements,
+        hicpp-braces-around-statements
+
+      ]
+...
