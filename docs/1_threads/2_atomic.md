@@ -1,3 +1,13 @@
+---
+layout: post
+title: （二）多线程那些事儿：原子类型数据和内存序
+categories: C++
+related_posts: True
+tags: C++ threads
+toc:
+  sidebar: right
+---
+
 ## （二）多线程那些事儿：原子类型数据和内存序
 
 ### 1. concepts
@@ -32,18 +42,18 @@
 
 #### 1.4 atomic 类型能有什么成员函数？怎么用？
 
-| 操作               | 对应函数（接口）                                                                                             | 对应操作符                                                  |
-| ------------------ | ------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------- |
-| **读取**           | `T load(memory_order order = memory_order_seq_cst) const noexcept;`                                          | 转换操作符：`operator T() noexcept;`                        |
-| **存储**           | `void store(T desired, memory_order order = memory_order_seq_cst) noexcept;`                                 | 赋值操作符：`operator=(T desired) noexcept;`                |
-| **加法/自增**      | `T fetch_add(T arg, memory_order order = memory_order_seq_cst) noexcept;`                                    | `operator+=(T arg) noexcept;`<br>后置自增 `operator++(int)` |
-| **减法/自减**      | `T fetch_sub(T arg, memory_order order = memory_order_seq_cst) noexcept;`                                    | `operator-=(T arg) noexcept;`<br>后置自减 `operator--(int)` |
-| **按位与**         | `T fetch_and(T arg, memory_order order = memory_order_seq_cst) noexcept;`                                    | `operator&=(T arg) noexcept;`                               |
-| **按位或**         | `T fetch_or(T arg, memory_order order = memory_order_seq_cst) noexcept;`                                     | `operator\|=(T arg) noexcept;`                              |
-| **按位异或**       | `T fetch_xor(T arg, memory_order order = memory_order_seq_cst) noexcept;`                                    | `operator^=(T arg) noexcept;`                               |
-| **交换**           | `T exchange(T desired, memory_order order = memory_order_seq_cst) noexcept;`                                 | ——（无对应操作符）                                          |
-| **比较交换（弱）** | `bool compare_exchange_weak(T& expected, T desired, memory_order success, memory_order failure) noexcept;`   | ——（无对应操作符）                                          |
-| **比较交换（强）** | `bool compare_exchange_strong(T& expected, T desired, memory_order success, memory_order failure) noexcept;` | ——（无对应操作符）                                          |
+| 操作 | 对应函数（接口） | 对应操作符 |
+| --- | --- | --- |
+| **读取** | `T load(memory_order order = memory_order_seq_cst) const noexcept;` | 转换操作符：`operator T() noexcept;` |
+| **存储** | `void store(T desired, memory_order order = memory_order_seq_cst) noexcept;` | 赋值操作符：`operator=(T desired) noexcept;` |
+| **加法/自增** | `T fetch_add(T arg, memory_order order = memory_order_seq_cst) noexcept;` | `operator+=(T arg) noexcept;`<br>后置自增 `operator++(int)` |
+| **减法/自减** | `T fetch_sub(T arg, memory_order order = memory_order_seq_cst) noexcept;` | `operator-=(T arg) noexcept;`<br>后置自减 `operator--(int)` |
+| **按位与** | `T fetch_and(T arg, memory_order order = memory_order_seq_cst) noexcept;` | `operator&=(T arg) noexcept;` |
+| **按位或** | `T fetch_or(T arg, memory_order order = memory_order_seq_cst) noexcept;` | `operator\|=(T arg) noexcept;` |
+| **按位异或** | `T fetch_xor(T arg, memory_order order = memory_order_seq_cst) noexcept;` | `operator^=(T arg) noexcept;` |
+| **交换** | `T exchange(T desired, memory_order order = memory_order_seq_cst) noexcept;` | ——（无对应操作符） |
+| **比较交换（弱）** | `bool compare_exchange_weak(T& expected, T desired, memory_order success, memory_order failure) noexcept;` | ——（无对应操作符） |
+| **比较交换（强）** | `bool compare_exchange_strong(T& expected, T desired, memory_order success, memory_order failure) noexcept;` | ——（无对应操作符） |
 
 - **为什么同时提供函数接口，和操作符接口？** 操作符（如赋值和类型转换）默认使用严格的内存序`memory_order_seq_cst`），而函数版本允许开发者根据具体场景指定其他内存序（例如 relaxed、acquire/release），以便进行更细粒度的性能调优。
 
@@ -407,9 +417,9 @@ bool CAS(int* addr, int expected, int desired) {
 
 在标准库中，上述 CAS 操作被封装成了以下两种形式：
 
-| 操作               | 对应函数（接口）                                                                                             | 对应操作符         |
-| ------------------ | ------------------------------------------------------------------------------------------------------------ | ------------------ |
-| **比较交换（弱）** | `bool compare_exchange_weak(T& expected, T desired, memory_order success, memory_order failure) noexcept;`   | ——（无对应操作符） |
+| 操作 | 对应函数（接口） | 对应操作符 |
+| --- | --- | --- |
+| **比较交换（弱）** | `bool compare_exchange_weak(T& expected, T desired, memory_order success, memory_order failure) noexcept;` | ——（无对应操作符） |
 | **比较交换（强）** | `bool compare_exchange_strong(T& expected, T desired, memory_order success, memory_order failure) noexcept;` | ——（无对应操作符） |
 
 **参数类型分析**： 在 `compare_exchange_weak()` 函数中，第一个参数 `expected` 采用引用类型，它实际上等价于前面自定义 `CAS(int* addr, int expect, int desired)` 函数中的 `expected` 参数，用于表示我们期望目标地址处的值。而 `compare_exchange_weak()` 函数中的 `desired` 参数同样对应自定义 `CAS` 函数中的 `desired` 参数，即我们想要替换成的新值。此外，`compare_exchange_weak()` 函数后面的 `success` 和 `failure` 参数均为内存序相关参数，分别用于指定当比较交换操作成功和失败时所采用的内存序。
@@ -493,6 +503,17 @@ todo: ABA 问题之后看情况再补充。
   - CAS 只关注了比较前后的值是否改变，而无法清楚在此过程中变量的变更明细，这就是所谓的 ABA 问题。
   - **解决思路**：
     - 使用版本号（如 MySQL 的 MVCC）。在变量前面追加版本号，每次变量更新的时候把版本号加一，那么 A-B-A 就变成了 1A-2B-3A，从而解决 ABA 问题。
+  * **ABA 问题**
+    - CAS 需要在操作值的时候检查下值有没有发生变化，如果没有发生变化则更新，但是如果一个值原来是 A，变成了 B，又变成了 A，那么使用 CAS 进行检查时会发现它的值没有发生变化，但是实际上却变化了。这就是 CAS 的 ABA 问题
+    - 常见的解决思路是使用版本号。在变量前面追加上版本号，每次变量更新的时候把版本号加一，那么`A-B-A` 就会变成`1A-2B-3A`，由于每个过程值都会有对应的版本，所以我们在修改过程中需要传入期望版本和当前的值，数据库的多版本并发控制也类似
+    - 添加时间戳：添加世时间戳也可以解决。查询的时候把时间戳一起查出来，对的上才修改并且更新值的时候一起修改更新时间，这样也能保证，方法很多但是跟版本号都是异曲同工之妙
+  * 无限循环问题（自旋）
+    - 如果 CAS 不成功，则会原地自旋，如果长时间自旋会**给 CPU 带来非常大且没必要的开销**
+    - 可以使用 java8 中的 LongAdder，分段 CAS 和自动分段迁移
+    - 自旋 CAS 如果长时间不成功，会给 CPU 带来非常大的执行开销。如果 JVM 能支持处理器提供的 pause 指令那么效率会有一定的提升，pause 指令有两个作用，第一它可以延迟流水线执行指令（de-pipeline）,使 CPU 不会消耗过多的执行资源，延迟的时间取决于具体实现的版本，在一些处理器上延迟时间是零。第二它可以避免在退出循环的时候因内存顺序冲突（memory order violation）而引起 CPU 流水线被清空（CPU pipeline flush），从而提高 CPU 的执行效率
+  * **只能保证一个共享变量的原子操作**
+    - 只能保证一个共享变量的原子操作。当对一个共享变量执行操作时，我们可以使用循环 CAS 的方式来保证原子操作，但是对多个共享变量操作时，循环 CAS 就无法保证操作的原子性，这个时候就可以用锁，或者有一个取巧的办法，就是**把多个共享变量合并成一个共享变量来操作**。比如有两个共享变量 i=2，j=a，合并一下 ij=2a，然后用 CAS 来操作
+    - 可以用 AtomicReference (java)，这个是封装自定义对象的，多个变量可以放一个自定义对象里，然后他会检查这个对象的引用是不是同一个。如果多个线程同时对一个对象变量的引用进行赋值，用 AtomicReference 的 CAS 操作可以解决并发冲突问题
 
 ```
   * **ABA问题**

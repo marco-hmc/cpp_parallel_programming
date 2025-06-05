@@ -1,3 +1,13 @@
+---
+layout: post
+title: （五）多线程那些事儿：并行库 openmp
+categories: C++
+related_posts: True
+tags: C++ threads doing
+toc:
+  sidebar: right
+---
+
 ## （五）多线程那些事儿：并行库 openmp
 
 ### 1. concepts
