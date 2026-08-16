@@ -1,0 +1,74 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "clangcl-vs",
+      "displayName": "ClangCL (VS 2022)",
+      "description": "Visual Studio 2022 with ClangCL toolset",
+      "generator": "Visual Studio 17 2022",
+      "toolset": "ClangCL",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "D:/openscad/vcpkg/scripts/buildsystems/vcpkg.cmake"
+      }
+    },
+    {
+      "name": "clangcl-ninja-base",
+      "hidden": true,
+      "description": "Ninja + clang-cl shared settings",
+      "generator": "Ninja",
+      "environment": {
+        "PATH": "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/Llvm/x64/bin;C:/Program Files/Microsoft Visual Studio/2022/Community/Common7/IDE/CommonExtensions/Microsoft/CMake/Ninja;$penv{PATH}"
+      },
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "clang-cl",
+        "CMAKE_CXX_COMPILER": "clang-cl",
+        "CMAKE_TOOLCHAIN_FILE": "D:/openscad/vcpkg/scripts/buildsystems/vcpkg.cmake"
+      }
+    },
+    {
+      "name": "clangcl-ninja-debug",
+      "displayName": "ClangCL + Ninja (Debug)",
+      "description": "Ninja + clang-cl Debug — 生成 compile_commands.json",
+      "inherits": "clangcl-ninja-base",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "clangcl-ninja-release",
+      "displayName": "ClangCL + Ninja (Release)",
+      "description": "Ninja + clang-cl Release — 生成 compile_commands.json",
+      "inherits": "clangcl-ninja-base",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "clangcl-vs-debug",
+      "displayName": "VS Debug",
+      "configurePreset": "clangcl-vs",
+      "configuration": "Debug"
+    },
+    {
+      "name": "clangcl-vs-release",
+      "displayName": "VS Release",
+      "configurePreset": "clangcl-vs",
+      "configuration": "Release"
+    },
+    {
+      "name": "clangcl-ninja-debug",
+      "displayName": "Ninja Debug",
+      "configurePreset": "clangcl-ninja-debug"
+    },
+    {
+      "name": "clangcl-ninja-release",
+      "displayName": "Ninja Release",
+      "configurePreset": "clangcl-ninja-release"
+    }
+  ]
+}

@@ -1,8 +1,9 @@
 #include <omp.h>
-#include <unistd.h>
 
+#include <chrono>
 #include <cstdio>
 #include <iostream>
+#include <thread>
 
 namespace OpenMP_1_critical {
     void task() {
@@ -189,7 +190,7 @@ namespace OpenMP_9_lock {
             std::cout << "Thread " << omp_get_thread_num()
                       << " has acquired the lock. Sleeping 2 seconds..."
                       << std::endl;
-            sleep(2);
+            std::this_thread::sleep_for(std::chrono::seconds(2));
             std::cout << "Thread " << omp_get_thread_num()
                       << " is releasing the lock..." << std::endl;
             omp_unset_lock(&lock);

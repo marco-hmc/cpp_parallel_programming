@@ -1,0 +1,5 @@
+add_subdirectory(0_basic_test)
+add_subdirectory(1_threadPool_test)
+add_subdirectory(2_tbb_test)
+add_subdirectory(3_eightQueen)
+add_subdirectory(4_ppl_strategy_test)

@@ -1,3 +1,15 @@
+---
+layout: post
+title: （四）多线程那些事儿：并行库 tbb
+categories: C++
+related_posts: True
+tags: threads doing
+toc:
+  sidebar: right
+---
+
+[toc]
+
 ## （四）多线程那些事儿：并行库 tbb
 
 ### 0. concepts
@@ -197,9 +209,9 @@ size_t n = 1<<26;
 
 ### 3. others
 
-#### 3.1 containers
+#### 3.1 线程安全容器
 
-就是线程安全的容器 todo:
+TBB 提供了一套线程安全的容器，如 `tbb::concurrent_vector`、`tbb::concurrent_hash_map`、`tbb::concurrent_queue` 等。这些容器内部实现了细粒度锁或无锁机制，允许多个线程并发读写而无需外部同步，适合在多线程环境中作为共享数据结构使用。与标准库容器外加手动锁的方案相比，TBB 的并发容器通常具有更好的伸缩性和更低的竞争开销。
 
 #### 3.2 partitioner
 
@@ -331,3 +343,76 @@ int main() {
     ```
 
     类似语法糖，和前面是类似的。也是针对同一个任务域，但用 isolate 隔离，禁止其内部的工作被窃取
+
+### 99. quiz
+
+#### 1. tbb导致的`extern C`抛异常
+
+并行库调用的函数能够抛异常，这个是很多人都知道的。即pll/tbb等有异常收集机制，当并行任务中有异常抛出时，ppl会捕获这些异常，并将它们封装在一个`aggregate_exception`对象中，然后将其重新抛出到调用线程。调用线程可以通过捕获`aggregate_exception`来处理这些异常。
+
+但是，如果一个task抛了异常，其他task会怎么样呢？下面的代码演示了这个问题：
+
+```c++
+#include <ppl.h>
+
+#include <chrono>
+#include <iostream>
+#include <stdexcept>
+#include <thread>
+
+struct Guard {
+    const char* name;
+    Guard(const char* n) : name(n) { std::cout << name << " constructed\n"; }
+    ~Guard() { std::cout << name << " destructed\n"; }
+};
+
+extern "C" void extern_c_task() {
+    // 不会有内存泄露
+    // Guard g("externC");
+    // try {
+    //     // B
+    //     Concurrency::parallel_for(0, 10, [](int j) {
+    //         std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    //         std::cout << "  nested " << j << "\n";
+    //     });
+    //     std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+    // } catch (...) {
+    // }
+    // 会有内存泄露
+    Guard g("externC");
+    Concurrency::parallel_for(0, 10, [](int j) {
+       std::this_thread::sleep_for(std::chrono::milliseconds(100));
+       std::cout << "  nested " << j << "\n";
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+}
+
+int main() {
+    try {
+        Concurrency::parallel_for(0, 1500, [&](int i) {
+            if (i == 0) {
+                extern_c_task();
+            } else {
+                // A
+                std::this_thread::sleep_for(std::chrono::milliseconds(200));
+                std::cout << i << "\n";
+                throw std::runtime_error("exception from parallel task");
+            }
+        });
+    } catch (const std::exception& e) {
+        std::cout << "main caught exception: " << e.what() << "\n";
+    } catch (...) {
+        std::cout << "main caught unknown exception\n";
+    }
+
+    return 0;
+}
+```
+
+如果并行任务的一个task发出异常之后（在`A`处），其他task的继续是没有意义的，因此都可以被终止。但不是所有task都能够被终止，纯计算任务没有调度点的不能够被成功终止，只会继续运行；而有ppl相关函数的，才能够被成功终止。即通过设置一个全局的标志位，告诉其他task不需要继续运行了。ppl内部会定期检查这个标志位，如果发现标志位被设置了，就会终止当前task的执行，而这个终止是通过抛出一个特殊的异常来实现的。
+
+如果当前task是在extern "C" 修饰的函数里，向上抛异常时，可能会引发Undefined Behavior，比如要使用RAII机制释放的内存会因为函数栈帧的破坏而无法释放，从而导致内存泄漏。
+
+如果没有`tbb/ppl`相关函数调用点，`extern "C"`函数内的task是无法被成功终止的，因此会继续运行，直到完成，从而避免了异常抛出引发的未定义行为。
+
+结论：其实说白了就是，`parallel_for`是会抛异常的，`extern "C"`里面使用`parallel_for`就需要在里面`try-catch`，不能往外抛；而`parallel_for`什么时候会抛异常呢？上面这个例子里是`A`处抛异常的时候，其他task会被终止，而其他task里如果有`parallel_for`调用点，就会抛异常。

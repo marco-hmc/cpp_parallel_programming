@@ -1,9 +1,10 @@
 #include <omp.h>
-#include <stdio.h>
 
+#include <cstdio>
 #include <iostream>
 
-namespace OpenMP_1_default {
+// ============================================================
+namespace opm_default {
     void task() {
         int shared_var = 10;   // 默认共享变量
         int private_var = 20;  // 将被声明为私有变量
@@ -16,10 +17,11 @@ namespace OpenMP_1_default {
                       << ", private_var: " << private_var << std::endl;
         }
     }
-}  // namespace OpenMP_1_default
+}  // namespace opm_default
 
-namespace OpenMP_5_private {
-    void example() {
+// ============================================================
+namespace opm_private {
+    void task() {
         int shared_var = 100;  // 共享变量
         int private_var = -1;  // 私有变量
 
@@ -34,10 +36,11 @@ namespace OpenMP_5_private {
         std::cout << "After parallel region, private_var = " << private_var
                   << " (unchanged in main thread)" << std::endl;
     }
-}  // namespace OpenMP_5_private
+}  // namespace opm_private
 
-namespace OpenMP_3_firstprivate {
-    void example() {
+// ============================================================
+namespace opm_firstprivate {
+    void task() {
         int i = 10;
 
 #pragma omp parallel firstprivate(i)
@@ -48,10 +51,11 @@ namespace OpenMP_3_firstprivate {
         }
         printf("After parallel region, i = %d\n", i);
     }
-}  // namespace OpenMP_3_firstprivate
+}  // namespace opm_firstprivate
 
-namespace OpenMP_4_lastprivate {
-    void example() {
+// ============================================================
+namespace opm_lastprivate {
+    void task() {
         const int size = 1000;
         int i = -1, a[size];
 
@@ -60,14 +64,15 @@ namespace OpenMP_4_lastprivate {
 
         std::cout << "After parallel region, i = " << i << std::endl;
     }
-}  // namespace OpenMP_4_lastprivate
+}  // namespace opm_lastprivate
 
-namespace OpenMP_5_reduction {
-    double two_body_energy(int i, int j) {
+// ============================================================
+namespace opm_reduction {
+    static double two_body_energy(int i, int j) {
         return (2.0 * i + 3.0 * j) / 10.0;  // 模拟计算
     }
 
-    void example() {
+    void task() {
         const int nbodies = 1000;
         double energy = 0.0;
 
@@ -81,15 +86,24 @@ namespace OpenMP_5_reduction {
 
         std::cout << "Total energy = " << energy << std::endl;
     }
-}  // namespace OpenMP_5_reduction
+}  // namespace opm_reduction
 
-///////////////////////////////
+// ============================================================
 
 int main() {
-    OpenMP_1_default::task();
-    OpenMP_5_private::example();
-    OpenMP_3_firstprivate::example();
-    OpenMP_4_lastprivate::example();
-    OpenMP_5_reduction::example();
+    std::cout << "===== 1. default(shared) private =====\n";
+    opm_default::task();
+
+    std::cout << "\n===== 2. private =====\n";
+    opm_private::task();
+
+    std::cout << "\n===== 3. firstprivate =====\n";
+    opm_firstprivate::task();
+
+    std::cout << "\n===== 4. lastprivate =====\n";
+    opm_lastprivate::task();
+
+    std::cout << "\n===== 5. reduction =====\n";
+    opm_reduction::task();
     return 0;
 }

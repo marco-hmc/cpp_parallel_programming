@@ -4,7 +4,8 @@
 #include <thread>
 #include <vector>
 
-namespace LockGuardExample {
+// ============================================================
+namespace lock_guard_example {
     /*
     1. `std::lock_guard`的用途：
     `std::lock_guard`是一个简单的RAII包装器，用于管理互斥锁的生命周期。
@@ -26,25 +27,25 @@ namespace LockGuardExample {
 
     std::mutex mtx;
 
-    void critical_section(int id) {
+    static void critical_section(int id) {
         std::lock_guard<std::mutex> lock(mtx);
-        std::cout << "Thread " << id
-                  << " entered critical section using lock_guard." << std::endl;
+        std::cout << "线程 " << id << " 通过 lock_guard 进入临界区。"
+                  << std::endl;
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        std::cout << "Thread " << id
-                  << " leaving critical section using lock_guard." << std::endl;
+        std::cout << "线程 " << id << " 通过 lock_guard 离开临界区。"
+                  << std::endl;
     }
 
-    void run() {
+    void task() {
         std::thread t1(critical_section, 1);
         std::thread t2(critical_section, 2);
-
         t1.join();
         t2.join();
     }
-}  // namespace LockGuardExample
+}  // namespace lock_guard_example
 
-namespace UniqueLockExample {
+// ============================================================
+namespace unique_lock_example {
     /*
     1. `std::unique_lock`和`std::lock_guard`的区别：
         * `std::lock_guard`在构造时自动锁定互斥锁，在析构时自动解锁互斥锁，但是在其生命周期内不能改变锁的状态。
@@ -63,36 +64,34 @@ namespace UniqueLockExample {
 
     std::mutex mtx;
 
-    void critical_section(int id) {
+    static void critical_section(int id) {
         std::unique_lock<std::mutex> lock(mtx, std::defer_lock);
-        std::cout << "Thread " << id << " created unique_lock but did not lock."
+        std::cout << "线程 " << id << " 创建了 unique_lock 但未锁定。"
                   << std::endl;
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
         lock.lock();
-        std::cout << "Thread " << id
-                  << " entered critical section using unique_lock."
+        std::cout << "线程 " << id << " 通过 unique_lock 进入临界区。"
                   << std::endl;
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
         lock.unlock();
-        std::cout
-            << "Thread " << id
-            << " manually unlocked unique_lock and exited critical section."
-            << std::endl;
-        lock.lock();  // unique_lock will release the lock when it goes out of scope
+        std::cout << "线程 " << id << " 手动解锁 unique_lock 离开临界区。"
+                  << std::endl;
+        lock.lock();  // unique_lock 离开作用域时会自动释放锁
     }
 
-    void run() {
+    void task() {
         std::thread t1(critical_section, 1);
         std::thread t2(critical_section, 2);
 
         t1.join();
         t2.join();
     }
-}  // namespace UniqueLockExample
+}  // namespace unique_lock_example
 
-namespace ScopedLockExample {
+// ============================================================
+namespace scoped_lock_example {
     /*
         1. scoped_lock是什么？
             `std::scoped_lock` 是一个RAII类型的锁管理器，用于同时管理多个互斥锁。
@@ -109,27 +108,33 @@ namespace ScopedLockExample {
     */
     std::mutex mtx1, mtx2;
 
-    void task(int id) {
+    static void do_task(int id) {
         std::scoped_lock lock(mtx1, mtx2);
-        std::cout << "Thread " << id
-                  << " acquired both locks using scoped_lock." << std::endl;
+        std::cout << "线程 " << id << " 通过 scoped_lock 同时获取了两把锁。"
+                  << std::endl;
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        std::cout << "Thread " << id
-                  << " releasing both locks using scoped_lock." << std::endl;
+        std::cout << "线程 " << id << " 通过 scoped_lock 释放两把锁。"
+                  << std::endl;
     }
 
-    void run() {
-        std::thread t1(task, 1);
-        std::thread t2(task, 2);
+    void task() {
+        std::thread t1(do_task, 1);
+        std::thread t2(do_task, 2);
 
         t1.join();
         t2.join();
     }
-}  // namespace ScopedLockExample
+}  // namespace scoped_lock_example
 
+// ============================================================
 int main() {
-    LockGuardExample::run();
-    UniqueLockExample::run();
-    ScopedLockExample::run();
+    std::cout << "===== 1. lock_guard 基本用法 =====\n";
+    lock_guard_example::task();
+
+    std::cout << "\n===== 2. unique_lock 基本用法 =====\n";
+    unique_lock_example::task();
+
+    std::cout << "\n===== 3. scoped_lock（多锁管理）=====\n";
+    scoped_lock_example::task();
     return 0;
 }

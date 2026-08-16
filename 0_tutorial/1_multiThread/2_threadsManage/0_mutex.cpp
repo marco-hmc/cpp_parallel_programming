@@ -5,13 +5,14 @@
 #include <thread>
 #include <vector>
 
-namespace Mutex {
+// ============================================================
+namespace mutex_basic {
     /*
         1. mutex是什么？
             互斥锁（mutex）是一种用于保护共享资源的同步机制。当一个线程需要访问共享资源时，它需要先获取互斥锁，然后才能访问这个资源。
             当线程访问完共享资源后，它需要释放互斥锁，以便其他线程可以访问这个资源。
             互斥锁可以防止多个线程同时访问共享资源，从而避免数据竞争和其他并发问题。
-        
+
         2. std::mutex怎么用？
             * 构造函数
                 `std::mutex`是一个类，它的构造函数没有形参，用于创建一个互斥锁对象。
@@ -23,59 +24,54 @@ namespace Mutex {
             * 其他成员函数
                 - `try_lock()`: 尝试获取互斥锁。如果互斥锁当前没有被其他线程持有，那么这个函数会立即获取锁并返回`true`。
                     如果互斥锁已经被其他线程持有，那么这个函数不会阻塞，而是立即返回`false`。
-    
+
     */
     std::mutex mtx;
 
-    void critical_section(int id) {
+    static void critical_section(int id) {
         mtx.lock();
-        std::cout << "Thread " << id << " entered critical section."
-                  << std::endl;
+        std::cout << "线程 " << id << " 进入临界区。" << std::endl;
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        std::cout << "Thread " << id << " leaving critical section."
-                  << std::endl;
+        std::cout << "线程 " << id << " 离开临界区。" << std::endl;
         mtx.unlock();
     }
 
-    void run() {
+    void task() {
         std::thread t1(critical_section, 1);
         std::thread t2(critical_section, 2);
-
         t1.join();
         t2.join();
     }
-}  // namespace Mutex
+}  // namespace mutex_basic
 
-namespace TryLockExample {
+// ============================================================
+namespace try_lock_example {
     std::mutex mtx;
 
-    void critical_section(int id) {
+    static void critical_section(int id) {
         if (mtx.try_lock()) {
-            std::cout << "Thread " << id
-                      << " entered critical section using try_lock."
+            std::cout << "线程 " << id << " 通过 try_lock 进入临界区。"
                       << std::endl;
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
-            std::cout << "Thread " << id
-                      << " leaving critical section using try_lock."
+            std::cout << "线程 " << id << " 通过 try_lock 离开临界区。"
                       << std::endl;
             mtx.unlock();
         } else {
-            std::cout << "Thread " << id
-                      << " could not enter critical section using try_lock."
+            std::cout << "线程 " << id << " 未能通过 try_lock 进入临界区。"
                       << std::endl;
         }
     }
 
-    void run() {
+    void task() {
         std::thread t1(critical_section, 1);
         std::thread t2(critical_section, 2);
-
         t1.join();
         t2.join();
     }
-}  // namespace TryLockExample
+}  // namespace try_lock_example
 
-namespace RecursiveMutex {
+// ============================================================
+namespace recursive_mutex_example {
     /*
         1. recursive_mutex是什么？
             `std::recursive_mutex` 是一种特殊的互斥锁，允许同一个线程多次获取同一个锁，而不会导致死锁。
@@ -119,9 +115,10 @@ namespace RecursiveMutex {
         t1.join();
         t2.join();
     }
-}  // namespace RecursiveMutex
+}  // namespace recursive_mutex_example
 
-namespace SharedMutex {
+// ============================================================
+namespace shared_mutex_example {
     /*
         1. shared_mutex是什么？
             `std::shared_mutex` 是一种共享互斥锁，允许多个线程同时读取共享资源，但在写入时需要独占锁。
@@ -188,9 +185,10 @@ namespace SharedMutex {
         std::cout
             << "\n最终状态：所有操作完成，缓存数据未被修改（写仅执行一次）\n";
     }
-}  // namespace SharedMutex
+}  // namespace shared_mutex_example
 
-namespace TimeMutex {
+// ============================================================
+namespace timed_mutex_example {
     /*
         1. timed_mutex是什么？
             `std::timed_mutex` 是一种支持定时功能的互斥锁，允许线程在指定时间内尝试获取锁。
@@ -225,16 +223,17 @@ namespace TimeMutex {
         }
     }
 
-    void run() {
+    void task() {
         std::thread t1(critical_section, 1);
         std::thread t2(critical_section, 2);
 
         t1.join();
         t2.join();
     }
-}  // namespace TimeMutex
+}  // namespace timed_mutex_example
 
-namespace SharedTimeMutex {
+// ============================================================
+namespace shared_timed_mutex_example {
     /*
         1. shared_timed_mutex是什么？
             `std::shared_timed_mutex` 是一种共享互斥锁，允许多个线程同时读取共享资源，但在写入时需要独占锁。
@@ -254,15 +253,72 @@ namespace SharedTimeMutex {
         3. 使用场景
             适用于读多写少的场景，例如缓存系统或配置文件读取。
     */
-    void task() {}
-}  // namespace SharedTimeMutex
+    std::shared_timed_mutex stm;
+    int shared_data = 0;
 
+    void reader(int id) {
+        // 尝试在 100ms 内获取共享锁
+        if (stm.try_lock_shared_for(std::chrono::milliseconds(100))) {
+            std::cout << "[读线程 " << id << "] 读取数据: " << shared_data
+                      << '\n';
+            stm.unlock_shared();
+        } else {
+            std::cout << "[读线程 " << id << "] 超时，未能获取共享锁\n";
+        }
+    }
+
+    void writer(int id) {
+        // 尝试在 100ms 内获取独占锁
+        if (stm.try_lock_for(std::chrono::milliseconds(100))) {
+            ++shared_data;
+            std::cout << "[写线程 " << id << "] 更新数据为: " << shared_data
+                      << '\n';
+            std::this_thread::sleep_for(std::chrono::milliseconds(150));
+            stm.unlock();
+        } else {
+            std::cout << "[写线程 " << id << "] 超时，未能获取独占锁\n";
+        }
+    }
+
+    void task() {
+        std::cout << "=== shared_timed_mutex 读写演示 ===\n";
+        std::thread writers[2];
+        std::thread readers[3];
+
+        // 先启动写线程,让它们尝试获取锁
+        for (int i = 0; i < 2; ++i) {
+            writers[i] = std::thread(writer, i + 1);
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        // 再启动读线程
+        for (int i = 0; i < 3; ++i) {
+            readers[i] = std::thread(reader, i + 1);
+        }
+
+        for (auto& t : writers) t.join();
+        for (auto& t : readers) t.join();
+    }
+}  // namespace shared_timed_mutex_example
+
+// ============================================================
 int main() {
-    Mutex::run();
-    RecursiveMutex::task();
-    SharedMutex::task();
-    TimeMutex::run();
-    SharedTimeMutex::task();
+    std::cout << "===== 1. std::mutex 基本用法 =====\n";
+    mutex_basic::task();
+
+    std::cout << "\n===== 2. try_lock 示例 =====\n";
+    try_lock_example::task();
+
+    std::cout << "\n===== 3. recursive_mutex（递归锁）=====\n";
+    recursive_mutex_example::task();
+
+    std::cout << "\n===== 4. shared_mutex（读写锁）=====\n";
+    shared_mutex_example::task();
+
+    std::cout << "\n===== 5. timed_mutex（超时锁）=====\n";
+    timed_mutex_example::task();
+
+    std::cout << "\n===== 6. shared_timed_mutex（超时读写锁）=====\n";
+    shared_timed_mutex_example::task();
 
     return 0;
 }

@@ -159,5 +159,6 @@ namespace NotifyAllAtThreadExit {
 int main() {
     cv_wait::task();
     cv_waitFor::task();
+    NotifyAllAtThreadExit::task();
     return 0;
 }

@@ -5,34 +5,88 @@
 #include <thread>
 #include <vector>
 
-namespace regularOper {
+/*
+    ### 1. 所有原子变量都有 `exchange()` 方法和 `store` 吗？解释一下这两个方法怎么使用？
+
+    C++ 标准库中的 `std::atomic` 类提供了多种方法来操作原子变量，其中包括 `exchange()` 和 `store()` 方法。
+
+    - **`exchange()` 方法**：
+    - 用于将原子变量的当前值替换为新值，并返回旧值。
+    - 语法：`atomic_var.exchange(new_value, memory_order)`
+    - 示例：
+        ```cpp
+        std::atomic<int> atomic_var(0);
+        int old_value = atomic_var.exchange(1); // 将 atomic_var 的值设置为 1，并返回旧值 0
+        ```
+
+    - **`store()` 方法**：
+    - 用于将新值存储到原子变量中。
+    - 语法：`atomic_var.store(new_value, memory_order)`
+    - 示例：
+        ```cpp
+        std::atomic<int> atomic_var(0);
+        atomic_var.store(1); // 将 atomic_var 的值设置为 1
+        ```
+
+    ### 2. 为什么 `lock()` 函数中要使用 `while` 循环？会导致忙等待吗？
+
+    - **使用 `while` 循环**：
+    - `lock()` 函数中的 `while` 循环用于实现自旋锁。自旋锁会不断尝试获取锁，直到成功为止。
+    - 代码示例：
+        ```cpp
+        void lock() {
+            while (flag.exchange(true, std::memory_order_relaxed)) {
+                // 忙等待
+            }
+            std::atomic_thread_fence(std::memory_order_acquire);
+        }
+        ```
+
+    - **忙等待**：
+    - 是的，`while` 循环会导致忙等待（busy-waiting），即线程在循环中不断检查条件，而不进行任何有意义的工作。
+    - 忙等待会消耗 CPU 资源，但在某些情况下（如锁持有时间很短），自旋锁可能比阻塞锁更高效。
+
+    ### 3. 为什么 `unlock()` 函数中要使用 `std::atomic_thread_fence(std::memory_order_release)`？
+
+    - **`std::atomic_thread_fence(std::memory_order_release)`**：
+    - 用于确保在释放锁之前，所有先前的内存操作不会被重排序到这个操作之后。
+    - 这可以确保在释放锁之前，所有对共享数据的修改都对其他线程可见。
+    - 代码示例：
+        ```cpp
+        void unlock() {
+            std::atomic_thread_fence(std::memory_order_release);
+            flag.store(false, std::memory_order_relaxed);
+        }
+        ```
+*/
+
+// ============================================================
+namespace regular_oper {
     /*
     1. 原子变量的store和load操作是什么意思，有什么用？
         * store操作：将一个值存储到原子变量中，可以指定内存顺序(memory order)。
         * load操作：从原子变量中加载一个值，可以指定内存顺序(memory order)。
         * fetch_add操作：原子地将一个值加到原子变量中，返回原子变量的旧值。
 
-        这些操作和相关运算符的操作本质是一直的，只是函数的方式可以指定内存徐，而运算符的方式是默认的内存顺序（最安全的）。
+        这些操作和相关运算符的操作本质是一致的，只是函数的方式可以指定内存顺序，而运算符的方式是默认的内存顺序（最安全的）。
     */
 
     std::atomic<int> count = {0};
 
-    int test_1() {
+    void task() {
         std::thread t1([]() { count.fetch_add(1); });
         std::thread t2([]() {
-            count++;     // same as count.fetch_add(1)
-            count += 1;  // same as count.fetch_add(1)
+            count++;     // 等价于 count.fetch_add(1)
+            count += 1;  // 等价于 count.fetch_add(1)
         });
 
         t1.join();
         t2.join();
         std::cout << count << '\n';
-        return 0;
     }
-}  // namespace regularOper
+}  // namespace regular_oper
 
-/////////////////////////////////////////////////////////////
-
+// ============================================================
 namespace lock_free {
     /*
     1. 自定义原子类型哪些是 lock-free 的，哪些不是？
@@ -87,7 +141,8 @@ namespace atomic_bool {
     }
 }  // namespace atomic_bool
 
-namespace atomic_compare_exchange_wear {
+// ============================================================
+namespace atomic_cas_example {
     /*
     1. compare_exchange_weak怎么用的？
     `compare_exchange_weak` 是 C++ 标准库中 `std::atomic`
@@ -165,9 +220,10 @@ namespace atomic_compare_exchange_wear {
         printFunc();
     }
 
-}  // namespace atomic_compare_exchange_wear
+}  // namespace atomic_cas_example
 
-namespace AtomicFlag {
+// ============================================================
+namespace atomic_flag_example {
     /*
     ### 1. `atomic_flag` 和一般的 `atomic` 有什么区别？
     atomic_flag一定是无锁的。
@@ -213,9 +269,10 @@ namespace AtomicFlag {
 
         std::cout << stream.str();
     }
-}  // namespace AtomicFlag
+}  // namespace atomic_flag_example
 
-namespace CallOnce {
+// ============================================================
+namespace call_once_example {
     /*
     1. call_once是什么？
         `std::call_once`是一个C++标准库函数，用于确保一个函数或代码块只被执行一次。
@@ -249,66 +306,11 @@ namespace CallOnce {
         }
         std::cout << "winner thread: " << winner << '\n';
     }
-}  // namespace CallOnce
+}  // namespace call_once_example
 
+// ============================================================
 namespace atomic_thread_fence {
     /*
-
-    ### 1. 所以原子变量都有 `exchange()` 方法和 `store` 吗？解释一下这两个方法怎么使用？
-
-    C++ 标准库中的 `std::atomic` 类提供了多种方法来操作原子变量，其中包括 `exchange()` 和 `store()` 方法。
-
-    - **`exchange()` 方法**：
-    - 用于将原子变量的当前值替换为新值，并返回旧值。
-    - 语法：`atomic_var.exchange(new_value, memory_order)`
-    - 示例：
-        ```cpp
-        std::atomic<int> atomic_var(0);
-        int old_value = atomic_var.exchange(1); // 将 atomic_var 的值设置为 1，并返回旧值 0
-        ```
-
-    - **`store()` 方法**：
-    - 用于将新值存储到原子变量中。
-    - 语法：`atomic_var.store(new_value, memory_order)`
-    - 示例：
-        ```cpp
-        std::atomic<int> atomic_var(0);
-        atomic_var.store(1); // 将 atomic_var 的值设置为 1
-        ```
-
-    ### 2. 为什么 `lock()` 函数中要使用 `while` 循环？会导致忙等待吗？
-
-    - **使用 `while` 循环**：
-    - `lock()` 函数中的 `while` 循环用于实现自旋锁。自旋锁会不断尝试获取锁，直到成功为止。
-    - 代码示例：
-        ```cpp
-        void lock() {
-            while (flag.exchange(true, std::memory_order_relaxed)) {
-                // 忙等待
-            }
-            std::atomic_thread_fence(std::memory_order_acquire);
-        }
-        ```
-
-    - **忙等待**：
-    - 是的，`while` 循环会导致忙等待（busy-waiting），即线程在循环中不断检查条件，而不进行任何有意义的工作。
-    - 忙等待会消耗 CPU 资源，但在某些情况下（如锁持有时间很短），自旋锁可能比阻塞锁更高效。
-
-    ### 3. 为什么 `unlock()` 函数中要使用 `std::atomic_thread_fence(std::memory_order_release)`？
-
-    - **`std::atomic_thread_fence(std::memory_order_release)`**：
-    - 用于确保在释放锁之前，所有先前的内存操作不会被重排序到这个操作之后。
-    - 这可以确保在释放锁之前，所有对共享数据的修改都对其他线程可见。
-    - 代码示例：
-        ```cpp
-        void unlock() {
-            std::atomic_thread_fence(std::memory_order_release);
-            flag.store(false, std::memory_order_relaxed);
-        }
-        ```
-
-    ### 4. 解释一下 `std::atomic_thread_fence` 怎么用？
-
     - **`std::atomic_thread_fence`**：
     - 是一个全局内存栅栏，用于控制内存操作的顺序。
     - 它不会对特定的原子变量进行操作，而是对所有内存操作生效。
@@ -319,17 +321,12 @@ namespace atomic_thread_fence {
     - 代码示例：
         ```cpp
         std::atomic<int> atomic_var(0);
-
         // 确保在获取锁之后的内存操作不会被重排序到获取锁之前
         std::atomic_thread_fence(std::memory_order_acquire);
-
         // 确保在释放锁之前的内存操作不会被重排序到释放锁之后
         std::atomic_thread_fence(std::memory_order_release);
         ```
-
-    希望这些解释对你有所帮助！如果有其他问题，请随时提问。
     */
-
     class mutex {
         std::atomic<bool> flag{false};
 
@@ -367,8 +364,28 @@ namespace atomic_thread_fence {
     }
 }  // namespace atomic_thread_fence
 
+// ============================================================
 int main() {
-    regularOper::test_1();
+    std::cout << "===== 1. 原子变量基本操作 =====\n";
+    regular_oper::task();
+
+    std::cout << "\n===== 2. lock-free 检测 =====\n";
+    lock_free::task();
+
+    std::cout << "\n===== 3. atomic<bool> 竞赛 =====\n";
+    atomic_bool::task();
+
+    std::cout << "\n===== 4. compare_exchange_weak（无锁链表）=====\n";
+    atomic_cas_example::task();
+
+    std::cout << "\n===== 5. atomic_flag（自旋锁）=====\n";
+    atomic_flag_example::task();
+
+    std::cout << "\n===== 6. call_once =====\n";
+    call_once_example::task();
+
+    std::cout << "\n===== 7. atomic_thread_fence（自定义mutex）=====\n";
+    atomic_thread_fence::task();
 
     return 0;
 }

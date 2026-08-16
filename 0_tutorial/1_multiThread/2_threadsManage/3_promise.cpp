@@ -1,3 +1,4 @@
+#include <chrono>
 #include <future>
 #include <iostream>
 #include <thread>
@@ -85,6 +86,7 @@ namespace promise_future_thread {
 
 }  // namespace promise_future_thread
 
+// ============================================================
 namespace future_waitFor {
     /*
     1. std::future::wait_for()怎么用？
@@ -94,7 +96,7 @@ namespace future_waitFor {
         - 如果`std::future`对象的状态在指定的时间内没有变为`ready`，并且在等待的过程中抛出了异常，那么`wait_for`函数会返回`std::future_status::deferred`。
         - `wait_for`函数的返回值是一个`std::future_status`枚举类型的值，表示`std::future`对象的状态。
 */
-    bool is_prime(int x) {
+    static bool is_prime(int x) {
         std::this_thread::sleep_for(std::chrono::seconds(2));
         for (int i = 2; i < x; ++i) {
             if (x % i == 0) {
@@ -104,7 +106,7 @@ namespace future_waitFor {
         return true;
     }
 
-    void test() {
+    void task() {
         std::future<bool> fut = std::async(is_prime, 3045348722);
         std::chrono::milliseconds span(10);
         while (fut.wait_for(span) == std::future_status::timeout) {
@@ -116,9 +118,10 @@ namespace future_waitFor {
     }
 }  // namespace future_waitFor
 
+// ============================================================
 namespace future_waitUntil {
 
-    bool is_prime(int x) {
+    static bool is_prime(int x) {
         std::this_thread::sleep_for(std::chrono::seconds(2));
         for (int i = 2; i < x; ++i) {
             if (x % i == 0) {
@@ -128,7 +131,7 @@ namespace future_waitUntil {
         return true;
     }
 
-    void test() {
+    void task() {
         std::future<bool> fut = std::async(is_prime, 3045348722);
         std::cout << "checking, please wait";
 
@@ -146,6 +149,7 @@ namespace future_waitUntil {
 
 }  // namespace future_waitUntil
 
+// ============================================================
 namespace shared_future {
     /*
     1. `std::shared_future`的用途：
@@ -164,7 +168,7 @@ namespace shared_future {
         因此，你需要确保`std::shared_future`在所有线程都获取到结果之后再销毁。
 */
 
-    int factorial(const std::shared_future<int> &f) {
+    static int factorial(const std::shared_future<int> &f) {
         int res = 1;
         int N = f.get();
         for (int i = N; i > 1; i--) {
@@ -187,12 +191,24 @@ namespace shared_future {
     }
 }  // namespace shared_future
 
+// ============================================================
 int main() {
+    std::cout << "===== 1. promise/future 基本用法 =====\n";
     promise_future_basic::task();
+
+    std::cout << "\n===== 2. promise/future + async =====\n";
     promise_future_async::task();
+
+    std::cout << "\n===== 3. promise/future + thread =====\n";
     promise_future_thread::task();
 
-    future_waitFor::test();
-    future_waitUntil::test();
+    std::cout << "\n===== 4. future::wait_for() =====\n";
+    future_waitFor::task();
+
+    std::cout << "\n===== 5. future::wait_until() =====\n";
+    future_waitUntil::task();
+
+    std::cout << "\n===== 6. shared_future =====\n";
+    shared_future::task();
     return 0;
 }

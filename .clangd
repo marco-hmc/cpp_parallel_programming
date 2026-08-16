@@ -4,7 +4,7 @@ Index:
 
 CompileFlags:
   Add: [-xc++, -Wall, -std=c++20, -Wno-parentheses]
-  Compiler: clang++
+  Compiler: clang-cl
 
 Diagnostics:
   ClangTidy:
@@ -40,4 +40,3 @@ Diagnostics:
         hicpp-braces-around-statements
 
       ]
-...

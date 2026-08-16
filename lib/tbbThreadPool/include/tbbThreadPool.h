@@ -18,8 +18,8 @@ namespace ParallelLib {
 
         template <typename Func, typename... Args>
         auto submitTask(Func&& func, Args&&... args)
-            -> std::future<typename std::result_of<Func(Args...)>::type> {
-            using ReturnType = typename std::result_of<Func(Args...)>::type;
+            -> std::future<typename std::invoke_result<Func, Args...>::type> {
+            using ReturnType = typename std::invoke_result<Func, Args...>::type;
 
             auto task =
                 std::make_shared<std::packaged_task<ReturnType()>>(std::bind(
@@ -52,8 +52,8 @@ namespace ParallelLib2 {
 
         template <typename Func, typename... Args>
         auto submitTask(Func&& func, Args&&... args)
-            -> std::future<typename std::result_of<Func(Args...)>::type> {
-            using ReturnType = typename std::result_of<Func(Args...)>::type;
+            -> std::future<typename std::invoke_result<Func, Args...>::type> {
+            using ReturnType = typename std::invoke_result<Func, Args...>::type;
 
             auto task =
                 std::make_shared<std::packaged_task<ReturnType()>>(std::bind(
@@ -71,7 +71,6 @@ namespace ParallelLib2 {
     };
 
 }  // namespace ParallelLib2
-
 
 namespace ParallelLib3 {
     namespace detail {
@@ -87,8 +86,8 @@ namespace ParallelLib3 {
 
         template <typename Func, typename... Args>
         auto submitTask(Func&& func, Args&&... args)
-            -> std::future<typename std::result_of<Func(Args...)>::type> {
-            using ReturnType = typename std::result_of<Func(Args...)>::type;
+            -> std::future<typename std::invoke_result<Func, Args...>::type> {
+            using ReturnType = typename std::invoke_result<Func, Args...>::type;
 
             auto task =
                 std::make_shared<std::packaged_task<ReturnType()>>(std::bind(
@@ -105,4 +104,4 @@ namespace ParallelLib3 {
         std::unique_ptr<detail::ThreadPoolImpl> pImpl;
     };
 
-}  // namespace ParallelLib2
+}  // namespace ParallelLib3

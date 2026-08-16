@@ -1,13 +1,13 @@
 cmake_minimum_required(VERSION 3.15.0)
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 include(CTest)
 include(${CMAKE_SOURCE_DIR}/cmake/linkDll.cmake)
 enable_testing()
 
-add_subdirectory(2_benchmark)
+add_subdirectory(1_benchmark)
 
 find_package(spdlog REQUIRED)
 
