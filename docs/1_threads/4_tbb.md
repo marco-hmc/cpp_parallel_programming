@@ -228,7 +228,9 @@ TBB 提供了一套线程安全的容器，如 `tbb::concurrent_vector`、`tbb::
     x[i+1]...;
   }
   ```
-  所以可以是 32 个任务，1 个任务处理 1 个元素；也可以是 16 个任务，1 个任务处理 2 个元素；也可以是 4 个任务，一个任务处理 8 个元素。然后开多少个线程也可以调整。这些设置都可以通过`tbb::xxx_partitioner`设置。
+  所以可以是 32 个任务，1 个任务处理 1 个元素；也可以是 16 个任务，1 个任务处理 2 个元素；也可以是 4 个任务，一个任务处理 8 个元素。这些设置都可以通过`tbb::xxx_partitioner`设置。
+
+  > ⚠️ 勘误（2026-08-25，经 1_benchmark/2_tbb_test v2 实测）：分区器控制的是**任务划分**，**不控制线程数**——线程数由 `tbb::task_arena`（如 `task_arena(4)`）或 `tbb::global_control` 控制。另外实测注意：static/affinity 分区器的叶子起点不保证 grain 对齐（等分负载优先），affinity 的划分树只对同一 Range 形状有效（跨参数复用会非法分裂）。
 
 ```c++
 #include "mtprint.h"
@@ -252,13 +254,22 @@ int main() {
 }
 ```
 
-    这个就是4个线程，每次任务处理8个元素，共4个任务。
+    这个就是`tbb::task_arena(4)`设置 4 个线程，`static_partitioner`把 32 个元素按 8 个一组切出 4 个任务。
 
 ### 4. tbb in practice
 
 #### 4.1 嵌套 parallel_for 的死锁
 
-下面这个代码是有可能会死锁的。怎么理解这个死锁如何出现？首先，这是一个无实际数据竞争的代码，用锁只是演示死锁问题。然后，因为内层的 for 循环执行完了，就可能窃取到另一个外部 for 循环的任务，导致 mutex 被重复上锁。就是自己锁了一遍，然后自己又想锁一下。
+下面这个代码是有可能会死锁的。怎么理解这个死锁如何出现？
+
+- 外层任务 i 持有 mutex，执行内层 parallel_for，并等待全部内层任务完成；
+- 内层任务不持锁，可被任何空闲 worker 窃取执行；
+- worker B 窃取 A 的内层 chunk 完成后，继续窃取**另一个外层任务 j**，试图获取同一把 mutex → B 阻塞（A 还持着锁）；
+- A 等待内层任务完成，但其中一部分 chunk 正握在已经阻塞的 B 手里 → A 永远等不到 → 死锁。
+
+一句话：**持锁 worker 的内层任务被窃走，窃取者随后阻塞在同一把锁上**。这是「锁 + 嵌套 + 工作窃取」三者交互的结果，不是嵌套 parallel_for 本身的问题（无锁嵌套是安全的）。
+
+> ⚠️ 勘误（2026-08-25，经 1_benchmark/2_tbb_test case3 门控演示实测）：下文示例原用 `std::recursive_mutex`，与解释错位——recursive_mutex 允许同线程重复上锁，死锁机制与「自己重复锁」无关，是跨 worker 的互等（见上）。演示（外层持锁 + 内层 parallel_for，12 worker）实测 30 秒无进展，看门狗确认死锁；内层包 `isolate` 的修复版实测 52.2ms 正常完成。
 
 ```c++
 #include <iostream>
@@ -270,7 +281,7 @@ int main() {
 int main() {
     size_t n = 1<<13;
     std::vector<float> a(n * n);
-    std::recursive_mutex mtx;
+    std::mutex mtx;
 
     tbb::parallel_for((size_t)0, (size_t)n, [&] (size_t i) {
         std::lock_guard lck(mtx);

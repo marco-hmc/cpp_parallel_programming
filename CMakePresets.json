@@ -1,5 +1,5 @@
 {
-  "version": 6,
+  "version": 3,
   "configurePresets": [
     {
       "name": "clangcl-vs",
@@ -45,6 +45,37 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release"
       }
+    },
+    {
+      "name": "clang-ninja-base",
+      "hidden": true,
+      "description": "Ninja + clang shared settings (Linux)",
+      "generator": "Ninja",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "fmt_DIR": "/usr/lib/x86_64-linux-gnu/cmake/fmt"
+      }
+    },
+    {
+      "name": "clang-ninja-debug",
+      "displayName": "Clang + Ninja (Debug)",
+      "description": "Ninja + clang Debug — 生成 compile_commands.json",
+      "inherits": "clang-ninja-base",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "clang-ninja-release",
+      "displayName": "Clang + Ninja (Release)",
+      "description": "Ninja + clang Release — 生成 compile_commands.json",
+      "inherits": "clang-ninja-base",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
     }
   ],
   "buildPresets": [
@@ -69,6 +100,16 @@
       "name": "clangcl-ninja-release",
       "displayName": "Ninja Release",
       "configurePreset": "clangcl-ninja-release"
+    },
+    {
+      "name": "clang-ninja-debug",
+      "displayName": "Ninja Debug",
+      "configurePreset": "clang-ninja-debug"
+    },
+    {
+      "name": "clang-ninja-release",
+      "displayName": "Ninja Release",
+      "configurePreset": "clang-ninja-release"
     }
   ]
 }

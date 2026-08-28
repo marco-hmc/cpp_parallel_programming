@@ -1,297 +1,240 @@
-# 2_tbb_test — TBB 并行 Framework Benchmark 报告
+# 2_tbb_test — TBB 并行框架 Benchmark 报告（v2 受控实验版）
 
-**测试目标：** 对比 Intel TBB (oneTBB) 与原生 std::thread、StdThreadPool 的性能差异，涵盖 `parallel_for`、同步原语、嵌套任务三大维度。
+**测试目标：** 受控实验——每条结论必须能归因到唯一的变量变化。三个研究问题：① 分组策略（partitioner × grain size × 负载形态）的最佳实践；② 锁原语 × 调度器 × 临界区粒度的真实差异；③ 嵌套 parallel_for 的影响（flat vs nested vs isolate、嵌套深度、内层粒度）。
 
-**测试框架：** Google Benchmark  
-**依赖：** `benchmark`, `spdlog`, `oneapi::tbb`, `tbbThreadPool`, `threadPool`（本地库）
+**测试框架：** Google Benchmark（repetitions=3，取均值；`--benchmark_min_time=0.3s`）
 
-**测试环境：**
-- 操作系统：Windows 11
-- 编译器：clang-cl
-- CPU：12 逻辑核 @ 2611 MHz
-- Cache：L1 = 48 KiB (x6)，L2 = 1280 KiB (x6)，L3 = 12288 KiB (x1)
+**依赖：** `benchmark`、`spdlog`、`oneapi::tbb`（2021.5.0，系统包）、`threadPool`（本地库）
 
-> ⚠️ **测试跳过说明：** `case2_tbb_queuing_mutex` 单次迭代耗时约 145 秒，严重超时，该测试之后被强制跳过；因此剩余的 case3 测试（threadpool 嵌套 / 双池 / 手动线程 / task_group）也整体未执行。本报告只包含实际完成测量的 benchmark。
+**测试平台/环境：** WSL2 / Linux，clang Release（-O3，clang-ninja-release preset），12 逻辑核 @ 2611 MHz，L1 48 KiB (x6) / L2 1280 KiB (x6) / L3 12288 KiB (x1)，Load Average 运行时 ≈ 3~6（中负载，见 §6 数据质量说明）
 
----
+**术语：** 见仓库根目录 `CONTEXT.md`（完成顺序/提交顺序/死锁/并行度侵蚀/过度订阅/配对对比/控制组/基线等）。
+
+> **v2 相对旧版（2026-08-10，Windows）的关键变更：**
+> 1. case1 全部重写：旧「显式 chunk vs auto_partitioner」两行实际都是 auto_partitioner（只差 grain 提示），对比无效 → 4 分区器 × 4 粒度 × 2 负载形态全矩阵；
+> 2. 旧 simple_partitioner「禁用」结论作废：旧测的唯一配置是 grainsize=1 + 共享 cache line 原子争用，归因错误 → v2 槽位归约消灭共享原子，全粒度扫描；
+> 3. case2 补测真 `tbb::mutex`（旧行实为 spin_mutex；且 oneTBB 2021 中 `tbb::mutex` 是 PREVIEW 特性，需 `__TBB_PREVIEW_MUTEXES`，实现为 spin+wait 混合而非经典 OS 锁）；
+> 4. case2 新增 PersistentTeam 持久线程组控制组，剥离旧版 std 系每迭代重建线程的混淆（旧「tbb 锁快 4.8x」「tbb_atomic 快 5.7x」均被证明是线程生命周期假象）；
+> 5. case2 锁次数配对修正：不依赖分区器叶子行为，以 N/K 个 batch 直接作 parallel_for 索引域（实测教训见 §3.1）；
+> 6. queuing_mutex 重定界：默认只跑 intended use（粗粒度公平队列），K=1 误用场景 `RUN_QUEUING_FINE=1` 门控 + 减量（旧 145s/迭代拖垮整套件）；
+> 7. case3 确定性负载：mt19937(42) 一次性预生成，全策略每迭代复用（旧 random_device 无种子，串行/并行测不同负载，3.4x 不可信）；
+> 8. 全 case 新增正确性校验（槽位归约 + verifyResult，stderr + abort）；旧版无任何校验；
+> 9. 新增门控实测：TBB 窃取重入死锁（教程 §4.1 声明）用看门狗验证；旧版死锁分析仅源码推理。
+>
+> ⚠️ 旧版数据为 Windows 11 / clang-cl；v2 全部数据为 WSL2/Linux 重跑，与旧版数值不可直接对比（平台差异如 shared_mutex 实现见 §3.3）。
 
 ## [toc]
 
----
-
 ## 1. 实验设计概览
 
-| Case | 研究问题 | 对比维度 | 变量数 | 完成测量 |
-|------|---------|---------|--------|---------|
-| Case 1 | TBB `parallel_for` vs 线程池 vs 裸线程？ | 6 种调度方式 | 固定工作量 1M 元素 | 6/6 ✅ |
-| Case 2 | TBB 同步原语 vs std 同步原语？ | 11 种同步方式 | 固定 1M 操作 | 10/11（queuing_mutex 跳过）|
-| Case 3 | TBB 嵌套并行 vs 线程池嵌套？ | 6 种嵌套策略 | 固定 50 外层任务 | 2/6（因 case2 超时整体跳过）|
+| Case | 研究问题 | 变量 | 控制组/基线 | 完成测量 |
+|------|---------|------|------------|---------|
+| Case 1 | 分组策略：工作窃取何时值钱？ | 分区器 {auto, static, simple, affinity} × 粒度 {1, 256, 4096, 65536} × 偏斜 {0, 8} | 串行基线；静态分片线程池（跨框架锚点，与 static 同调度形状） | 42 |
+| Case 2 | 锁 × 调度器 × 临界区粒度 | 锁 6 种 × 调度器 {team, parallel_for} × K {1, 64, 4096} | PersistentTeam(8) 控制组；无锁串行基线；std::mutex 2×2 交叉 | 19 |
+| Case 3 | 嵌套 parallel_for 的影响 | 结构 {flat, nested, isolate, depth3, 双池} × outer {8, 32} × 内层粒度 {1, 256, 4096} × 偏斜 {0, 1} | 串行基线；确定性 spec 全策略复用；threadPool 双池锚点 | 16 |
 
----
+裁剪说明（有依据）：`case1_native_threads`（1_threadPool_test case1 已分解线程创建成本）、`case3_manual_threads`（无独立轴）、`case3_tbb_task_group`（与嵌套 parallel_for 同构）、`case3_threadpool_nested_unsafe`（1_threadPool_test case2 已用看门狗覆盖线程池嵌套死锁，且其结论不能泛化到 TBB——正是本 case3 要证实的）。
 
-## 2. Case 1 — parallel_for vs ThreadPool vs 原生线程
+全套默认 77 行 ≈ 6 分钟（threadpool 的 grain=1 两行占 ~2.5 分钟）。门控演示不进默认套件。
+
+## 2. Case 1 — 分区器 × 粒度 × 负载形态
 
 ### 2.1 测试设计
 
-对 1,000,000 个元素执行 `sin*cos+sqrt` 计算密集型任务，对比 6 种并行方式：
+- **负载**：`TOTAL_WORK = 2^20` 个元素（可被全部粒度整除），每元素成本 `elemCost(i, amp) = BASE_UNITS × (1 + amp × quarter)`，4 段阶梯偏斜（quarter 0..3 权重 1/9/17/25，amp=8 时）。纯函数、确定性、NO_OPTIMIZE 保证各策略同代码。
+- **配对对比**：同一负载同一槽位归约，唯一差异是分区器/粒度/偏斜轴。
+- **槽位归约**：每个 chunk 的部分和原子累加进规范 chunk 槽位，主线程按槽位升序合并（归约顺序 = 元素顺序）。**这个设计让校验系统抓出了两个真实的库行为认知错误**：① static/affinity 的叶子起点不保证 grain 对齐（等分负载优先），槽位必须是 atomic fetch_add 而非赋值（实测丢 0.2%~2.7% 部分和）；② affinity_partitioner 的划分树只对同一 Range 形状有效，跨参数复用会非法分裂（见 §2.3 教训）。
+- **串行基线**：amp=0 实测 30.1ms、amp=8 实测 411ms（13.7 倍，与理论权重 13 一致）。
+- 正确性：每行与串行参考值比对，相对容差 1e-9（实测噪声 ≤1e-14）。
 
-| 策略 | 实现 | 分块 |
-|------|------|------|
-| `case1_serial` | 单线程串行 | — |
-| `case1_native_threads` | 手工 `std::thread` × core 数 | 静态均分 |
-| `case1_threadpool` | `StdThreadPool` 提交 chunk | CHUNK=1000 |
-| `case1_tbb_parallel_for` | `tbb::parallel_for` + `blocked_range(CHUNK=1000)` | 显式分块 |
-| `case1_tbb_auto_partitioner` | `tbb::parallel_for` + `auto_partitioner()` | TBB 自动决定 |
-| `case1_tbb_simple_partitioner` | `tbb::parallel_for` + `simple_partitioner()` | 静态均分 |
+### 2.2 实测结果与分析
 
-### 2.2 关键差异
+**均匀负载（amp=0），Time 均值（ms），串行 30.1：**
 
-```cpp
-// TBB 的 blocked_range 机制——天然支持 chunk
-tbb::parallel_for(
-    tbb::blocked_range<int>(0, TOTAL_WORK, CHUNK_SIZE),
-    [&](const tbb::blocked_range<int>& range) {
-        // 每个 body 调用处理一个 CHUNK，不是单个元素
-        double local_result = compute_task(range.begin(), range.end());
-        total_result.fetch_add(local_result, std::memory_order_relaxed);
-    });
+| 策略 \ 粒度 | 1 | 256 | 4096 | 65536 |
+|---|---|---|---|---|
+| auto | **6.19** | 8.35 | 12.4 | 14.8 |
+| static | 17.1 | 15.1 | 21.7 | 17.1 |
+| simple | 33.3 | 14.3 | 14.5 | 15.2 |
+| affinity | 15.4 | 15.6 | 12.6 | 15.7 |
+| threadpool 静态分片 | 23204 | 105 | 14.6 | 15.6 |
 
-// ThreadPool——需要手动切分
-for (int i = 0; i < TOTAL_WORK; i += CHUNK_SIZE) {
-    futures.push_back(pool.submitTask([i, end]() {
-        return compute_task(i, end);
-    }));
-}
-```
+**偏斜负载（amp=8），Time / CPU（ms），串行 411：**
 
-### 2.3 实测结果与分析
+| 策略 \ 粒度 | 1 | 256 | 4096 | 65536 |
+|---|---|---|---|---|
+| auto | 179 / 170 | 181 / 180 | 177 / 153 | 181 / 121 |
+| static | 191 / 11.4 | 207 / 10.4 | 207 / 10.9 | 198 / 12.6 |
+| simple | 187 / 184 | 159 / 155 | 164 / 160 | 190 / 128 |
+| affinity | 248 / 168 | 191 / 186 | 165 / 158 | 204 / 13.1 |
+| threadpool 静态分片 | 22775 / 17879 | 190 / 44.9 | 183 / 4.56 | 193 / 0.82 |
 
-| 策略 | Time | CPU | 加速比（vs Serial） | 迭代数 |
-|------|------|-----|--------------------|--------|
-| Serial | 30.5 ms | 19.8 ms | 1.00×（基准） | 41 |
-| **ThreadPool** | **3.72 ms** | 0.453 ms | **8.2×** 🏆 | 896 |
-| TBB auto_partitioner | 6.60 ms | 4.63 ms | 4.6× | 179 |
-| TBB parallel_for (blocked_range) | 8.09 ms | 5.56 ms | 3.8× | 90 |
-| TBB simple_partitioner | 109 ms | 60.8 ms | 0.28×（比串行慢 3.6×） | 9 |
-| Native threads | 217 ms | 0.469 ms | 0.14×（比串行慢 7.1×） | 100 |
+**分析：**
 
-**关键发现（基于实测）：**
+- **旧「auto 优于显式 chunk」是混淆假象，但 auto 确实是最稳的选择。** 均匀负载下 auto@1 是全场最优（4.9x），且对粒度不敏感：偏斜下 auto 四档粒度 177~181ms 几乎水平，Time/CPU ≈ 1.0~1.5（自适应分裂回收了尾端空闲）。auto 对 grain 提示的响应比直觉弱——grain 只是分裂下界，auto 自己决定实际分裂深度。
+- **旧「simple_partitioner 禁用」结论作废。** simple@1 = 33.3ms ≈ 串行（1M 个单元素任务的任务开销 ≈ 3ms），但旧版的 109ms（3.6x 慢于串行）并未复现——旧版多出的 ~76ms 是共享 cache line 原子争用。simple 在 grain ≥ 256 后与其他分区器持平（14~15ms）。**simple 的代价是「任务爆炸」而非「无窃取」**。
+- **static 的软肋在偏斜负载的 CPU 利用率。** 偏斜下 static 的 Time（191~207ms）与其他分区器相差不大，但 CPU 只有 10~13ms——Time/CPU ≈ 17 倍，说明 worker 大量空闲等待：static 按线程数等分（实测 12 个叶子、起点不与 grain 对齐），阶梯偏斜下吃重尾的 worker 决定墙钟时间。这正是无窃取分区器在**异构负载**上的真实代价：不是吞吐下降，而是资源闲置。
+- **affinity 在本负载下无优势且存在风险。** 均匀/偏斜下 affinity 均未超过 auto（最好 165ms）；偏斜 + 粗粒度（65536）下 CPU 仅 13.1ms、Time 204ms——划分树复用导致 8/12 worker 闲置。affinity 的价值场景是**重复调用 + 缓存敏感负载**（划分稳定带来的缓存驻留），本 case 的计算负载对划分不敏感，测不出它的好处——只能测出它的风险。选它需要明确的缓存理由。
+- **静态分片线程池的真相。** threadpool@4096/65536（14.6~15.6ms）≈ TBB static（15~22ms），旧版「线程池 8.2x 全场最快」的真相是**均匀负载 + 静态分片**，而非线程池本身更优。真正拉开差距的是 grain=1：threadpool 23.2 秒 vs TBB auto 6.19ms——**3750 倍**。condvar 队列线程池每任务 ~20µs 的提交成本在细粒度下崩溃；TBB 的 per-worker 本地队列 + 窃取把每任务调度成本压到 ~30ns。
+- **偏斜负载下的最优解是 auto + 任意 grain**（177~181ms），其次是 simple/affinity @ 4096（164~165ms）。static 与 threadpool 静态分片在这种形态下都靠不住（Time/CPU 失衡）。
 
-1. **ThreadPool 反而是最快（3.72ms，8.2×）**：本负载完全均匀（1M 次 `sin*cos+sqrt`），CHUNK=1000 的静态分片已是最优解，TBB 的动态调度优势无从发挥，反而带来自适应拆分的额外开销。结论：**均匀任务上，简单线程池静态分片即可胜出。**
+### 2.3 教程声明核对与教训
 
-2. **auto_partitioner（6.60ms，4.6×）优于显式 blocked_range(1000)（8.09ms，3.8×）**：自动分块策略比手写 CHUNK 更优，是 TBB 侧的推荐路径——粒度太细调度开销大，太粗负载不均衡，auto 自适应平衡两者。
+- 教程 docs/1_threads/4_tbb.md §3.2 称「通过 partitioner 设置开多少个线程」——**错误**。分区器控制任务划分；线程数由 task_arena/global_control 控制。已向教程提交勘误。
+- **教训 1（库行为以实测为准）：** static/affinity 的叶子起点不保证 grain 对齐、affinity 的划分树跨参数复用会非法分裂——这些是官方文档没有明说的实现细节，由本套件的校验系统实测抓出。
+- **教训 2（粒度经验法则）：** 任务开销 ~µs 级的调度系统（线程池队列）要求粒度 ≥ 数千元素；任务开销 ~ns 级的调度系统（TBB）在 grain=1 也能工作（auto 会自适应聚合）。grain 的推荐值因调度器而异，不能搬用。
 
-3. **simple_partitioner 是灾难（109ms，0.28×，比串行还慢 3.6×）**：等分区间 + 无工作窃取导致负载不均衡，且缺少自适应拆分，实测远差于 auto_partitioner（约 16 倍差距）。默认配置之外的分区器需要明确理由才使用。
-
-4. **native_threads 最慢（217ms，0.14×）**：Time 217ms vs CPU 0.469ms 的悬殊对比说明墙钟时间几乎全部花在线程创建/销毁与调度等待上。每次迭代重建 8 个线程的代价远大于 1M 元素的纯计算本身。
-
-5. **TBB 的 `blocked_range` 是关键抽象：** PPL 没有对应概念，必须手动 chunk（见 `4_ppl_strategy_test`）。
-
----
-
-## 3. Case 2 — 同步原语大比拼
+## 3. Case 2 — 锁原语 × 调度器 × 临界区粒度
 
 ### 3.1 测试设计
 
-在 1,000,000 次操作下，对比 11 种同步方式的性能。分为 5 个子维度：
-
-#### 3.1.1 Atomic 对比
-
-| 测试 | 实现 |
-|------|------|
-| `std_atomic` | `std::thread` × 8 + `std::atomic::fetch_add` |
-| `tbb_atomic` | `tbb::parallel_for` + `std::atomic::fetch_add` |
-
-> 两者使用同一同步原语，差异只在线程生命周期与调度方式。
-
-#### 3.1.2 互斥锁对比
-
-| 测试 | 锁类型 | 实现 |
-|------|--------|------|
-| `std_mutex` | `std::mutex` | std::thread × 8 |
-| `tbb_mutex` | `tbb::mutex` | tbb::parallel_for |
-| `tbb_spin_mutex` | `tbb::spin_mutex` | tbb::parallel_for |
-| `tbb_queuing_mutex` | `tbb::queuing_mutex` | tbb::parallel_for |
-
-锁类型区别：
-- `std::mutex` — 内核态互斥锁，竞争时阻塞等待
-- `tbb::spin_mutex` — 用户态自旋锁，短临界区最优
-- `tbb::queuing_mutex` — 公平排队锁，保证 FIFO 顺序
-
-#### 3.1.3 读写锁对比（读多写少 80/20）
-
-| 测试 | 锁类型 |
-|------|--------|
-| `std_shared_mutex_read_heavy` | `std::shared_mutex` |
-| `tbb_rw_lock_read_heavy` | `tbb::spin_rw_mutex` |
-
-#### 3.1.4 混合使用 & 计算+锁
-
-| 测试 | 场景 |
-|------|------|
-| `mixed_std_tbb` | TBB `parallel_for` 内使用 `std::mutex` |
-| `compute_with_std_mutex` | 计算 + `std::mutex` 保护 |
-| `compute_with_tbb_mutex` | 计算 + `tbb::spin_mutex` 保护 |
+- **N = 2^20 次操作，8 线程**。锁次数精确 = N/K，K ∈ {1, 64, 4096}。
+- **PersistentTeam 控制组**：8 线程 + std::barrier 双栅栏持久线程组，构造在计时窗外——与 TBB 常驻池同生命周期，剥离「线程创建」变量。
+- **std::mutex 2×2 交叉**：{team, parallel_for} × {std::mutex}，加 {parallel_for} × {tbb::mutex}，把「锁质量」与「调度器」两个效应拆开。
+- **锁次数配对（实测教训）**：第一版用 `blocked_range(N, K) + static_partitioner` 假设叶子数 = N/K——实测 static 按线程数等分，2^20 范围只有 ~12 个叶子，全部 TBB 行锁次数只有 ~12 次（0.005ms，校验通过但测了个寂寞）。修正为 `parallel_for(0, N/K)` 以 batch 为索引域，锁次数由构造保证。
+- 真 `tbb::mutex`：oneTBB 2021.5 中该类型在 `__TBB_PREVIEW_MUTEXES` 下才存在（PREVIEW 特性），实现为 spin+wait 混合（`waitable_atomic`），**并非**经典 TBB 2.x 的 OS 互斥锁。
+- 正确性：计数器精确 == N（整数精确比较）。
 
 ### 3.2 实测结果与分析
 
-| 排名 | 同步方式 | Time | 相对 std 同类加速比 | 说明 |
-|------|---------|------|--------------------|------|
-| 1 | `tbb_atomic` | 26.0 ms | vs `std_atomic`：5.7× | 线程复用 |
-| 2 | `std_shared_mutex`（读重） | 40.5 ms | vs `tbb_rw_lock`：1.6× | 意外胜出 |
-| 3 | `tbb_mutex` | 45.2 ms | vs `std_mutex`：4.8× | |
-| 4 | `tbb_spin_mutex` | 49.1 ms | vs `std_mutex`：4.4× | |
-| 5 | `tbb_rw_lock`（读重） | 66.1 ms | — | 自旋开销拖累 |
-| 6 | `mixed_std_tbb` | 67.2 ms | — | 混合可用，非陷阱 |
-| 7 | `compute_with_tbb_mutex` | 80.5 ms | vs `std`：2.1× | |
-| 8 | `std_atomic` | 147 ms | 基准 | 每次迭代重建 8 线程 |
-| 9 | `compute_with_std_mutex` | 170 ms | 基准 | |
-| 10 | `std_mutex` | 215 ms | 基准 | |
-| — | `tbb_queuing_mutex` | **145318 ms（≈145 s）** | vs `std_mutex`：≈0.0015× | 灾难，已跳过 ❌ |
+**Time 均值（ms），K ∈ {1, 64, 4096}：**
 
-**关键发现（基于实测）：**
+| 策略 | K=1 | K=64 | K=4096 |
+|---|---|---|---|
+| 无锁串行基线 | — | — | 0.619 |
+| std::mutex + team | 104 | 1.54 | 0.403 |
+| std::mutex + parallel_for | 95.4 | 4.92 | 2.20 |
+| tbb::mutex（PREVIEW）+ parallel_for | 264 | 3.69 | 1.23 |
+| tbb::spin_mutex + parallel_for | 135 | 3.73 | 1.10 |
+| tbb::queuing_mutex + parallel_for | 门控 | 11.4 | 1.08 |
 
-1. **`tbb_atomic`（26ms）比 `std_atomic`（147ms）快 5.7×，但原因不在 atomic 本身**：两者用的是同一个 `std::atomic::fetch_add`。差异完全来自线程生命周期——TBB parallel_for 复用池内线程，std 版本每次迭代重新创建 8 个线程（Time 147ms vs CPU 0.156ms 印证）。同样的锁、同样的竞争，差的只是线程复用。
+**读写锁（80/20 读重，K=1）与原子对照：**
 
-2. **`tbb_mutex`（45.2ms，4.8×）与 `tbb_spin_mutex`（49.1ms，4.4×）碾压 `std_mutex`（215ms）**：主要来自线程复用；自旋锁再省去内核态切换。注意 spin_mutex 并未显著快于 tbb::mutex——在每次迭代重建线程的巨大开销面前，锁类型本身的差异被淹没了。
+| 策略 | Time (ms) |
+|---|---|
+| std::shared_mutex + team | 313 |
+| tbb::spin_rw_mutex + parallel_for | 230 |
+| std::atomic + team | 29.0 |
+| std::atomic + parallel_for | 31.5 |
 
-3. **`tbb::queuing_mutex` 是灾难（145318ms ≈ 145 秒）**：公平排队锁在 parallel_for 每元素粒度的巨量 lock/unlock 下产生天文数字的排队操作，实测比 std_mutex 慢约 675 倍。**绝对不要将 queuing_mutex 用于细粒度 parallel_for 临界区。** 该测试单次迭代即耗时 145s，随后整体跳过。
+**分析：**
 
-4. **读多写少场景 `std::shared_mutex`（40.5ms）意外胜过 `tbb::spin_rw_mutex`（66.1ms）**：spin_rw_mutex 的自旋开销在大量短读中反而拖累性能——读操作极短时，多读者自旋争抢 cacheline 的开销超过了内核态读锁的成本。选型不要迷信 TBB。
+- **旧「tbb 锁比 std 快 4~5 倍」是线程生命周期假象。** 控制组下 std::mutex + team 与 std::mutex + parallel_for 在 K=1 时持平（104 vs 95.4ms）——同一把锁在两种调度器下无本质差异。锁的质量差异必须看**同调度器**的对比（下面三条），旧报告把「线程复用」与「锁质量」混为一谈。
+- **同调度器下的锁排名（parallel_for 列）：** K=1（高争用细粒度）：std::mutex（95.4）< spin_mutex（135）< tbb::mutex PREVIEW（264）。**tbb::mutex（PREVIEW）在高争用细粒度下最慢**——spin+wait 的混合实现在争用风暴下反而放大开销；K=4096（低争用）：spin_mutex（1.10）≈ queuing（1.08）≈ tbb::mutex（1.23）< std::mutex（2.20）。**细粒度用 std::mutex、粗粒度 TBB 系略优**，与直觉的「TBB 锁总是更快」不同——旧版从未测出这个形状，因为线程创建成本（每迭代 ~1ms 级）淹没了锁的真实差异。
+- **spin 的甜点窗口很窄。** spin_mutex 只在 K=64 以下有明显价值（K=1 时 135 vs tbb::mutex 264），K=4096 时与 queuing/tbb::mutex 无差别（1.10~1.23）。旧结论「spin 不显著」在修正锁次数后不再成立。
+- **queuing_mutex 的定位是公平性而非速度。** K=64 时 11.4ms（全场最慢）——FIFO 队列的交接成本；K=4096 时 1.08ms（与 spin 持平）。门控细粒度误用（K=1，N/20）实测 35.5ms，**每 worker 加锁次数比值 1.00~1.02**（FIFO 公平性的直接证据）。旧版 145s/迭代的「灾难」未复现——旧数字本身可能就是其 bug 性测量的产物（见 §6 勘误）。
+- **读写锁结论反转，且是平台相关。** v2（WSL2/glibc）tbb::spin_rw_mutex（230ms）< std::shared_mutex（313ms）；旧版（Windows）std::shared_mutex 40.5ms < tbb::spin_rw 66.1ms。glibc 的 shared_mutex（pthread_rwlock）与 Windows SRWLOCK 实现差异决定胜负。**读写锁的选择没有跨平台答案，需在本平台实测。**
+- **旧「tbb_atomic 快 5.7x」坐实为假象。** 控制组下 std::atomic + team（29.0）≈ std::atomic + parallel_for（31.5）。原子操作本身在两套调度下相同——旧版差距全部来自 std 侧重建 8 线程。
+- **CPU 列的语义（本报告统一解释）：** Google Benchmark 的 CPU 只计主线程。team 行主线程纯等待 → CPU ≈ 0（104ms 的 Time 对应 0.036ms CPU）；parallel_for 行主线程（arena 调用线程）参与执行 body → CPU 有值（62.5ms）。**TBB 的调用线程参与执行任务，线程池的主线程纯等待**——这是两套调度模型的又一处结构性差异，也是旧版 CPU-vs-Time 异常（ThreadPool CPU 0.453ms vs Time 3.72ms）的正解。
 
-5. **混合 `std::mutex` + TBB `parallel_for`（67.2ms）并非陷阱**：介于 TBB 锁与 std 原生之间，完全可用。
+### 3.3 教训
 
-6. **计算 + 锁：`tbb_spin_mutex`（80.5ms）比 `std_mutex`（170ms）快 2.1×**：即使临界区含计算，TBB 的线程复用优势依然显著。
+- 锁对比必须先拆「线程生命周期」，再谈锁质量——配对变量超过一个的对比产生的是复合假象。
+- 锁次数这类「显然正确」的假设也要校验：static_partitioner 的叶子数是线程数级而非 N/K，第一版全部 TBB 锁行都测了个寂寞，是校验（计数器 == N 通过 + 耗时 0.005ms 物理不可能）抓住的。
 
----
-
-## 4. Case 3 — 嵌套任务并行
+## 4. Case 3 — 嵌套并行：flat vs nested vs isolate
 
 ### 4.1 测试设计
 
-50 个外层任务，每个生成随机规模数据（100~10000 元素），需要内层并行处理。对比 6 种策略：
+- **确定性负载**：`makeSpec(outer, mean_inner=8000, skewed)` 用 mt19937(42) 一次性生成每外层任务的内层元素数；均匀 = 全部 8000，偏斜 = 伪随机 [2000, 32000]。参考值在计时窗外算好，全策略每迭代复用同一负载。
+- **配对对比**：同一 spec，唯一差异是任务结构——flat（blocked_range2d 一次拍平，教程 §2.2 推荐的二维做法）/ nested（外层 pf → 内层 pf）/ isolate（嵌套 + this_task_arena::isolate 禁内层窃取）/ depth3（三层）/ 双池（threadPool 6+6 静态切分锚点）。
+- 正确性：槽位归约 + 相对容差 1e-9（偏斜负载下 flat 用 `j < size[i]` 守卫跳过矩形域的幻影元素）。
 
-| 策略 | 外层 | 内层 | 安全性 |
-|------|------|------|--------|
-| `case3_serial_nested` | 串行 | 串行 | ✅ 基线 |
-| `case3_tbb_nested` | `tbb::parallel_for` | `tbb::parallel_for` | ✅ 天然支持 |
-| `case3_threadpool_nested_unsafe` | `StdThreadPool` | **同一个池** | ❌ 可能死锁 |
-| `case3_threadpool_two_level` | `StdThreadPool` (M/2) | `StdThreadPool` (M/2) | ✅ 两个独立池 |
-| `case3_manual_threads` | `std::thread` 均分 | 串行内层 | ✅ 无死锁风险 |
-| `case3_tbb_task_group` | `tbb::task_group` | `tbb::task_group` | ✅ 显式任务管理 |
+### 4.2 实测结果与分析
 
-### 4.2 死锁分析
+**Time 均值（ms），串行：均匀 12.4 / 偏斜 21.1：**
 
-```cpp
-// ❌ 危险：同一线程池嵌套
-pool.submitTask([&pool]() {
-    // 父任务占了一个 worker
-    pool.submitTask([]() { /* 子任务 */ }).get();
-    // 等待子任务 → 但所有 worker 可能都在执行父任务
-});
+| 策略 | 均匀 | 偏斜 |
+|---|---|---|
+| serial_nested | 12.4 | 21.1 |
+| flat_2d @ g=256 | **2.61** | **5.53** |
+| flat_2d @ g=4096 | 5.26 | 5.61 |
+| nested @ outer=32, g=256 | 3.02 | 6.91 |
+| nested @ outer=8, g=256 | 1.04 | — |
+| nested @ g_inner=1 | 4.03 | — |
+| nested @ g_inner=4096 | 4.02 | — |
+| nested_depth3 | 3.06 | — |
+| isolate @ outer=32 | 3.27 | — |
+| isolate @ outer=8 | 0.969 | — |
+| threadpool_two_level (6+6) | 5.90 | 10.8 |
 
-// ✅ 安全：两个独立池
-outer_pool.submitTask([&inner_pool]() {
-    inner_pool.submitTask([]() { /* 子任务 */ }).get();
-});
+**分析：**
 
-// ✅ 安全：TBB 嵌套并行
-tbb::parallel_for(0, N, [&](int i) {
-    tbb::parallel_for(0, M, [&](int j) {
-        // TBB 调度器处理嵌套，worker 可以"窃取"内层任务
-    });
-});
+- **「嵌套回收负载均衡」的预期被实测否定：flat 在两种负载形态下都赢。** 均匀：flat 2.61 vs nested 3.02（flat 快 16%）；偏斜：5.53 vs 6.91（flat 快 25%）。原因：拍平后 TBB 对整个域一次性做自适应分裂 + 窃取，嵌套的两层结构反而限制了调度视野（外层任务边界是硬边界）。**嵌套的价值不在负载均衡，而在结构表达**（每外层任务独立、数量动态、生命周期不同）。
+- **嵌套无死锁、有适度开销。** 均匀下 nested（3.02）与 flat（2.61）差距仅 16%，depth3（3.06）≈ depth2（3.02）——深度增加无额外税（此负载）。对照 1_threadPool_test case2 的并行度侵蚀（嵌套等待随父任务数线性劣化），TBB 嵌套的结构性优势成立。
+- **isolate 的隔离税远小于预期。** 预期 outer=8（<12 worker）时付 ~33% 利用率税——实测 0.969ms vs nested 1.04ms（**-7%，反而略快**）；outer=32 时 +8%。窃取本身有代价（跨核搬任务、缓存失效），isolate 禁掉内层窃取在部分场景收支平衡。**isolate 不是性能优化，是锁场景的正确性工具**（§4.3 死锁演示），平时不需要它。
+- **嵌套时内层粒度同样有甜点**：g_inner=1（4.03）与 4096（4.02）都慢于 256（3.02）——过细任务爆炸、过粗丧失平衡，与 case1 的粒度教训一致。
+- **跨框架结论成立：双池静态切分不能跨池平衡。** 均匀 5.90 vs nested 3.02（TBB 嵌套快 1.95x）；偏斜 10.8 vs 6.91（快 1.56x）。两个静态池之间没有窃取，外层负载不均时内层池空转。这也是「1_threadPool_test 的线程池结论不能泛化到 TBB」的直接证据。
+- **嵌套在 outer=8（<12 worker）下工作正常且无并行度侵蚀**：nested@8 = 1.04ms，其串行等效（8 任务 ≈ 3.1ms）的 3.0x——对照 1_threadPool_test case2 的并行度侵蚀，TBB 嵌套在此场景不死锁、不劣化。但注意小域下效率低于大域（3.0x vs outer=32 的 4.1x），空闲 worker 的跨层级窃取未能完全抵消小域任务开销。flat@outer=8 未测（本版缺口），此配对结论仅限 nested 自身。
+
+### 4.3 门控演示：教程 §4.1 死锁声明实测
+
+`docs/1_threads/4_tbb.md` §4.1 声称：嵌套 parallel_for + mutex + 工作窃取会死锁（外层持锁、内层任务被窃、窃取者随后阻塞在同一把锁上）。用看门狗实测（`RUN_TBB_STEAL_DEMO=1`，复用 1_threadPool_test 的 DEADLOCK_TIMEOUT_SECONDS 模式，outer=256, inner=4096）：
+
+```
+$ RUN_TBB_STEAL_DEMO=1 DEADLOCK_TIMEOUT_SECONDS=30 ./tbb_benchmark \
+    --benchmark_filter='case3_tbb_steal_deadlock'
+DEADLOCK CONFIRMED: nested parallel_for + mutex deadlocked (outer=256, inner=4096) for over 30s   # abort
 ```
 
-### 4.3 实测结果与分析
+**声明验证成立：30 秒无进展，死锁确认。** 修复版（内层包 `this_task_arena::isolate`）实测 52.2ms 正常完成——isolate 的官方修复方案同样验证有效。教程勘误：§4.1 示例代码用的是 `std::recursive_mutex`，而解释文字描述的是非递归锁自锁场景——示例与解释错位，已一并修正。
 
-| 策略 | Time | CPU | 加速比（vs Serial） | 迭代数 |
-|------|------|-----|--------------------|--------|
-| Serial（基线） | 41.9 ms | 30.6 ms | 1.00× | 24 |
-| **TBB nested** | **12.2 ms** | 7.29 ms | **3.4×** 🏆 | 90 |
-| ThreadPool nested（unsafe） | — | — | ⚠️ 未测（跳过） | — |
-| ThreadPool two_level | — | — | ⚠️ 未测（跳过） | — |
-| Manual threads | — | — | ⚠️ 未测（跳过） | — |
-| TBB task_group | — | — | ⚠️ 未测（跳过） | — |
+### 4.4 教训
 
-**关键发现（基于实测）：**
-
-1. **TBB 嵌套并行高效（12.2ms，3.4×）**：两层 `parallel_for` 嵌套下，调度器的工作窃取横跨所有层级，worker 不会因层级边界而空闲。实测证明 TBB 的嵌套并行是"一等公民"。
-
-2. **其余 4 种策略未取得数据**：因 `case2_tbb_queuing_mutex` 耗时约 145s 严重超时，剩余 case3 测试整体跳过。4.2 的死锁风险分析基于源码逻辑，未在本次运行中验证，后续补充测量时建议优先验证 `threadpool_nested_unsafe` 的死锁行为。
-
----
+- 「嵌套优于拍平（负载均衡）」在 TBB 上不成立——**可拍平就先拍平**，嵌套留给结构表达。
+- isolate 是锁场景正确性工具，不是性能优化。
+- 深度 ≤3 的嵌套开销可以忽略；真正要控制的是内层粒度和外层任务数与 worker 数的关系。
 
 ## 5. 综合结论
 
-### 5.1 TBB vs std::thread vs ThreadPool 总评
+### 5.1 核心发现（按证据强度排序）
 
-| 维度 | TBB | ThreadPool | std::thread |
-|------|-----|------------|-------------|
-| 易用性 | ⭐⭐⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐ |
-| 嵌套并行 | ✅ 天然支持（实测 3.4×） | ❌ 需多池 | ❌ 需手动管理 |
-| 工作窃取 | ✅ 自动 | ❌ 静态分片（均匀负载下已够用） | ❌ 手工实现 |
-| 同步原语 | ✅ 丰富（配合复用优势明显） | 依赖 std | ✅ 标准库 |
-| 引入成本 | 较重 (~10MB) | 轻量 (自写) | 零 |
-| 最优场景 | 通用/动态/嵌套并行 | 均匀固定任务（实测最快） | 极简单场景 |
+| 级别 | 发现 | 证据 |
+|---|---|---|
+| 🔴 | **线程生命周期效应曾系统性污染锁/原子对比**：旧「tbb 锁快 4.8x」「tbb_atomic 快 5.7x」全部消失于控制组下（atomic：29.0 vs 31.5ms；同调度器锁排名重排） | case2 2×2 交叉 + PersistentTeam |
+| 🔴 | **线程池静态分片在细粒度下崩溃**：grain=1 时 23.2s vs TBB auto 6.19ms（3750x）——condvar 队列 vs 本地队列+窃取的结构性差距 | case1 threadpool/1 vs auto/1 |
+| 🔴 | **嵌套 parallel_for + mutex + 窃取 → 死锁（实测确认）**；isolate 修复有效（52.2ms 完成） | case3 门控演示，看门狗 30s 触发 |
+| 🟡 | **「auto 优于显式 chunk」「simple 禁用」两条旧结论作废**：前者是混淆变量（两行都是 auto），后者归因错误（109ms 真因是原子争用而非无窃取，v2 实测 33.3ms ≈ 串行） | case1 全矩阵 |
+| 🟡 | **static 在偏斜负载下的代价是 CPU 闲置**：Time 191~207ms 但 CPU 仅 10~13ms（17x 失衡），auto 无此现象（Time≈CPU） | case1 amp=8 行 Time/CPU 对比 |
+| 🟡 | **锁的选择取决于临界区粒度与平台**：K=1 高争用 std::mutex 最优（95.4ms，tbb::mutex PREVIEW 最差 264ms）；K≥4096 TBB 系全面反超（1.08~1.23 vs 2.20ms）；读写锁胜负随平台反转（glibc vs SRWLOCK） | case2 全表 |
+| 🟢 | **flat ≥ nested**：均匀快 16%、偏斜快 25%；depth3≈depth2 无深度税；isolate 税 -7%~+8%（远小于直觉） | case3 配对 |
+| 🟢 | **TBB 嵌套 vs 双池线程池：1.6~2x 优势**——跨池无窃取是双池方案的硬伤 | case3 two_level 配对 |
+| 🟢 | **queuing_mutex 的公平性是真实的**：每 worker 加锁次数比值 1.00~1.02（FIFO） | case2 门控 |
+| 🟢 | **auto_partitioner 对 grain 不敏感且偏斜下最稳**：177~181ms 全粒度持平，Time/CPU ≈ 1.0~1.5 | case1 amp=8 行 |
 
-### 5.2 核心发现
+### 5.2 最佳实践
 
-| 排名 | 发现 | 影响 |
-|------|------|------|
-| 🔴 | `tbb::queuing_mutex` + 细粒度 `parallel_for` ≈ 145s | **高危：禁止** |
-| 🔴 | 同一线程池嵌套提交 = 死锁风险 | 高危 |
-| 🟡 | `simple_partitioner` 无工作窃取，实测比串行慢 3.6× | 中：非默认配置需谨慎 |
-| 🟡 | TBB 侧 `auto_partitioner`（4.6×）优于显式 chunk（3.8×） | 中：开发效率 |
-| 🟢 | 均匀负载下 StdThreadPool 静态分片即可最优（8.2×） | 低：简单场景无需 TBB |
-| 🟢 | TBB 线程复用让同步原语整体快 4–6× | 低：框架优势 |
-| 🟢 | 读重场景 `std::shared_mutex`（1.6×）意外胜出 `spin_rw_mutex` | 低：选型决策 |
+**分组策略（partitioner × grain size）：**
+1. 默认 `auto_partitioner`，grain 提示写「每任务预期工作量」即可，不要为它做精细调参——auto 对 grain 不敏感，且在偏斜负载下是唯一保持 CPU 满负荷的分区器。
+2. `simple_partitioner` 不是洪水猛兽：grain 合理（每任务 ≳ 100 元素）时与其他分区器持平；grain=1 的任务爆炸代价约等于串行成本，可接受但无收益。
+3. `static_partitioner` 只用于「负载严格均匀且要可复现划分」的场景；一旦负载可能不均，选 auto——static 的代价不是慢，是 worker 闲置（Time/CPU 失衡）。
+4. `affinity_partitioner` 只在重复调用 + 缓存敏感的负载上有理论优势；使用前提是与上次完全相同的 Range 形状（跨参数复用会非法分裂，见 §2.3）。划分树复用的坑比收益常见。
+5. 粒度经验法则：调度系统任务开销 ~µs 级（线程池队列）→ 粒度 ≥ 数千；~ns 级（TBB 本地队列）→ 粒度可以到个位数。
+6. 线程数不受 partitioner 控制——用 `task_arena` / `global_control`。
 
-### 5.3 最佳实践
-
-1. **TBB 并行用 `auto_partitioner`**；除非明确知道负载形态，否则不要用 `simple_partitioner`。
-2. **均匀任务：简单线程池静态分片即可最优**（实测 8.2× 全场第一），不必引入 TBB。
-3. **绝对避免 `tbb::queuing_mutex` + 细粒度 `parallel_for`**。
-4. **读多写少短临界区：`std::shared_mutex` 实测优于 `tbb::spin_rw_mutex`**，选型以实测为准。
-5. **凡是用线程的地方优先考虑线程复用**：一次迭代重建 8 线程的代价（std 系列 147~215ms）远超同步原语本身的差异。
-6. **嵌套并行直接用 TBB**，不要自建线程池嵌套——除非你非常清楚死锁条件。
-
----
+**嵌套 parallel_for 使用指南：**
+7. 能拍平就拍平（`blocked_range2d` 或一维摊平）——拍平在均匀与偏斜负载下都优于嵌套（16%~25%），且代码更简单。
+8. 嵌套留给结构表达：外层任务数量动态、生命周期独立、或外层任务本身在等待其他资源。深度 ≤3 无额外税。
+9. 嵌套的跨层级窃取保证 outer < worker 时正常工作（不死锁、无并行度侵蚀），但小域下效率低于大域——决定嵌套收益的是内层粒度与任务总量，不是外层任务数。
+10. 嵌套内层同样要控制粒度（甜点在 ~256 元素档）。
+11. `this_task_arena::isolate` 不是性能优化（税 -7%~+8%），是锁场景的正确性工具：外层持锁 + 内层 parallel_for 的代码**必须** isolate（或 task_arena 隔离），否则窃取重入死锁（§4.3 已实测）。
+12. 锁 + 嵌套组合里的锁，选 std::mutex（细粒度争用）或 spin_mutex（短临界区）都比 tbb::mutex PREVIEW 稳；tbb::mutex 是 PREVIEW 特性，避免在生产依赖。
 
 ## 6. 原始数据
 
-Google Benchmark 原始输出（Windows 11 / clang-cl / 12 逻辑核 @ 2611 MHz，CPU 缓存 L1=48KiB(x6), L2=1280KiB(x6), L3=12288KiB(x1)）：
+完整 JSON：`tmp/tbb_bench.json`（77 行 × 7 统计项）。文本：`tmp/tbb_bench.txt`。门控演示输出：`tmp/tbb_gated_queuing.txt`、`tmp/tbb_gated_fixed.txt`、`tmp/tbb_gated_deadlock.txt`。
 
-```text
-Benchmark                                  Time             CPU   Iterations
-case1_serial                            30.5 ms         19.8 ms           41
-case1_tbb_parallel_for                  8.09 ms         5.56 ms           90
-case1_threadpool                        3.72 ms        0.453 ms          896
-case1_tbb_auto_partitioner              6.60 ms         4.63 ms          179
-case1_tbb_simple_partitioner             109 ms         60.8 ms            9
-case1_native_threads                     217 ms        0.469 ms          100
-case2_std_atomic                         147 ms        0.156 ms          100
-case2_tbb_atomic                        26.0 ms         14.8 ms           56
-case2_std_mutex                          215 ms        0.156 ms          100
-case2_tbb_mutex                         45.2 ms         10.8 ms           90
-case2_tbb_spin_mutex                    49.1 ms         10.0 ms           75
-case2_tbb_queuing_mutex               145318 ms         3734 ms            1   ← SKIPPED after this
-case2_std_shared_mutex_read_heavy       40.5 ms        0.000 ms          100
-case2_tbb_rw_lock_read_heavy            66.1 ms         13.3 ms           79
-case2_mixed_std_tbb                     67.2 ms         28.8 ms           26
-case2_compute_with_std_mutex             170 ms        0.156 ms          100
-case2_compute_with_tbb_mutex            80.5 ms         8.87 ms           37
-case3_serial_nested                     41.9 ms         30.6 ms           24
-case3_tbb_nested                        12.2 ms         7.29 ms           90
--- remaining case3 tests skipped due to excessive runtime --
-```
+数据收集：2026-08-25，WSL2/Linux + clang Release（-O3），12 核 2611 MHz。运行时 Load Average ≈ 3~6（中负载）——本套件自己就是负载来源（threadpool grain=1 两行各 ~23s）。case1 amp=8 各行的 CV 与 case1_serial 的波动（30~41ms 跨运行）说明 ~10% 级噪声存在；结论均基于配对差值（同进程同负载相邻测量），对均匀噪声稳健。Iterations=1 的行（如 case1_threadpool/1/*，单迭代 23s）按 1_threadPool_test 先例标注：方向性结论可靠，精确比值仅作量级参考。
 
-**说明：**
+**⚠️ 旧版设计缺陷与勘误（v1 → v2）：**
+1. case1「显式 chunk vs auto」两行都是 auto_partitioner——对比无效；
+2. case1 simple 归因错误（原子争用 ≠ 无窃取），且从未在合理粒度下测过；
+3. case2 `tbb::mutex` 从未被测（旧行实为 spin_mutex）；oneTBB 2021 中它是 PREVIEW 特性，旧版连宏都没定义；
+4. case2 全部 std 行每迭代重建 8 线程——锁对比被线程创建主导；
+5. case2 queuing_mutex 145s/迭代：旧数字在受控复现中只有 35.5ms（N/20 减量折算 ~710ms/1M）——旧测量的 ~200 倍差距疑似其自身 bug 或测量环境问题，不可引用；
+6. case3 负载非确定（random_device 无种子），3.4x 不可信；
+7. 旧版零正确性校验——v2 校验系统抓出 3 个真实的库行为认知错误（叶子不对齐、affinity 跨参数非法分裂、static 锁次数假设）；
+8. 旧 CPU-vs-Time 异常未解释——v2 §3.2 统一解释（CPU 只计主线程，TBB 调用线程参与执行、线程池主线程纯等待）；
+9. 旧数据为 Windows 平台，读写锁结论与 Linux 相反（§3.2），平台差异不可忽视。
 
-- `case2_tbb_queuing_mutex` 单次迭代耗时约 145 秒（145318 ms），严重超时，该测试及之后所有 case3 测试被强制跳过。
-- 各 benchmark 的 `Iterations` 由 Google Benchmark 根据目标时长自动调节。
-- Time 远大于 CPU 的项（如 `case1_native_threads` 217ms/0.469ms、`case2_std_atomic` 147ms/0.156ms）均为每次迭代重建线程的实现，墙钟时间几乎全部花在线程生命周期与调度等待上。
-
----
-
-*数据采集：2026-08-10，Google Benchmark 默认设置，基于 `2_tbb_test` 实测运行结果。*
+*报告基于 2_tbb_test 实际 benchmark 运行数据生成（2026-08-25，WSL2/Linux + clang Release 构建，12 核 2611 MHz）。设计决策记录见 `tmp/design/2_tbb_test_redesign.md`，过程记录见 `tmp/fixJournal.md`。*
